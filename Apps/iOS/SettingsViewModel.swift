@@ -4,10 +4,16 @@ import WristAssistShared
 @MainActor
 final class SettingsViewModel: ObservableObject {
     @Published var apiKeyDraft: String
-    @Published var model: String
-    @Published var voice: String
-    @Published var instructions: String
-    @Published private(set) var settings: ProviderSettings
+    @Published var voice: String {
+        didSet { refreshUnsavedSettingsChanges() }
+    }
+    @Published var instructions: String {
+        didSet { refreshUnsavedSettingsChanges() }
+    }
+    @Published private(set) var settings: ProviderSettings {
+        didSet { refreshUnsavedSettingsChanges() }
+    }
+    @Published private(set) var hasUnsavedSettingsChanges = false
     @Published private(set) var watchStatus = "Not connected"
     @Published private(set) var lastError: String?
     @Published private(set) var apiKeyValidationError: String?
@@ -45,10 +51,10 @@ final class SettingsViewModel: ObservableObject {
         self.apiKeyDraft = savedAPIKey
         self.savedAPIKey = savedAPIKey
         self.settings = storedSettings
-        self.model = storedSettings.model
         self.voice = storedSettings.voice
         self.instructions = storedSettings.instructions
         self.lastError = initialError
+        refreshUnsavedSettingsChanges()
     }
 
     func start() {
@@ -110,7 +116,7 @@ final class SettingsViewModel: ObservableObject {
             if apiKeyDraft != trimmed {
                 apiKeyDraft = trimmed
             }
-            persistSettings(hasAPIKey: true)
+            persistSavedSettings(hasAPIKey: true)
             lastError = nil
         } catch {
             apiKeyValidationError = error.localizedDescription
@@ -134,15 +140,17 @@ final class SettingsViewModel: ObservableObject {
             try credentialStore.deleteAPIKey()
             apiKeyDraft = ""
             savedAPIKey = ""
-            persistSettings(hasAPIKey: false)
+            persistSavedSettings(hasAPIKey: false)
             lastError = nil
         } catch {
             apiKeyValidationError = error.localizedDescription
         }
     }
 
-    func persistSettings() {
-        persistSettings(hasAPIKey: settings.hasAPIKey)
+    func saveSettings() {
+        guard hasUnsavedSettingsChanges else { return }
+
+        persistSettings(draftSettings(hasAPIKey: settings.hasAPIKey), syncDraft: true)
     }
 
     func sendSettingsToWatch() {
@@ -157,18 +165,25 @@ final class SettingsViewModel: ObservableObject {
         hasUnsavedAPIKeyChanges && !isSavingAPIKey
     }
 
+    var canSaveSettings: Bool {
+        hasUnsavedSettingsChanges
+    }
+
     var hasAPIKeyText: Bool {
         !normalizedAPIKey(apiKeyDraft).isEmpty
     }
 
-    private func persistSettings(hasAPIKey: Bool) {
-        settings = ProviderSettings(
-            selectedAuthMode: .openAIAPIKey,
-            hasAPIKey: hasAPIKey,
-            model: model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? ProviderSettings.defaultModel : model,
-            voice: voice.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? ProviderSettings.defaultVoice : voice,
-            instructions: instructions
-        )
+    private func persistSavedSettings(hasAPIKey: Bool) {
+        persistSettings(currentSettings(hasAPIKey: hasAPIKey), syncDraft: false)
+    }
+
+    private func persistSettings(_ newSettings: ProviderSettings, syncDraft: Bool) {
+        settings = newSettings
+
+        if syncDraft {
+            voice = settings.voice
+            instructions = settings.instructions
+        }
 
         do {
             let data = try JSONEncoder().encode(settings)
@@ -179,6 +194,16 @@ final class SettingsViewModel: ObservableObject {
         }
     }
 
+    private func draftSettings(hasAPIKey: Bool) -> ProviderSettings {
+        ProviderSettings(
+            selectedAuthMode: .openAIAPIKey,
+            hasAPIKey: hasAPIKey,
+            model: ProviderSettings.defaultModel,
+            voice: voice,
+            instructions: instructions
+        )
+    }
+
     private func currentSettings() -> ProviderSettings {
         currentSettings(hasAPIKey: settings.hasAPIKey)
     }
@@ -187,10 +212,14 @@ final class SettingsViewModel: ObservableObject {
         ProviderSettings(
             selectedAuthMode: .openAIAPIKey,
             hasAPIKey: hasAPIKey,
-            model: model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? ProviderSettings.defaultModel : model,
-            voice: voice.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? ProviderSettings.defaultVoice : voice,
-            instructions: instructions
+            model: ProviderSettings.defaultModel,
+            voice: settings.voice,
+            instructions: settings.instructions
         )
+    }
+
+    private func refreshUnsavedSettingsChanges() {
+        hasUnsavedSettingsChanges = draftSettings(hasAPIKey: settings.hasAPIKey) != currentSettings()
     }
 
     private func normalizedAPIKey(_ apiKey: String) -> String {

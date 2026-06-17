@@ -55,21 +55,23 @@ struct ContentView: View {
                     apiKeyHelp
                 }
 
-                Section("Realtime") {
-                    TextField("Model", text: $viewModel.model)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-
-                    TextField("Voice", text: $viewModel.voice)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-
-                    TextField("Instructions", text: $viewModel.instructions, axis: .vertical)
-                        .lineLimit(3...6)
-
-                    Button("Send Settings to Watch") {
-                        viewModel.sendSettingsToWatch()
+                Section("Personalization") {
+                    Picker("Voice", selection: $viewModel.voice) {
+                        ForEach(ProviderSettings.supportedVoices) { voice in
+                            Text(voice.displayName).tag(voice.apiValue)
+                        }
                     }
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Prompt")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+
+                        TextField("Prompt", text: $viewModel.instructions, axis: .vertical)
+                            .lineLimit(3...6)
+                    }
+
+                    savePersonalizationButton
                 }
 
                 Section("Watch") {
@@ -82,15 +84,6 @@ struct ContentView: View {
             }
             .navigationTitle("WristAssist")
             .navigationBarTitleDisplayMode(.inline)
-            .onChange(of: viewModel.model) { _, _ in
-                viewModel.persistSettings()
-            }
-            .onChange(of: viewModel.voice) { _, _ in
-                viewModel.persistSettings()
-            }
-            .onChange(of: viewModel.instructions) { _, _ in
-                viewModel.persistSettings()
-            }
         }
     }
 
@@ -124,6 +117,23 @@ struct ContentView: View {
 
                 Spacer()
             }
+            .buttonStyle(.borderless)
+        }
+    }
+
+    @ViewBuilder
+    private var savePersonalizationButton: some View {
+        if viewModel.hasUnsavedSettingsChanges {
+            Button {
+                viewModel.saveSettings()
+            } label: {
+                HStack {
+                    Text("Save")
+                    Spacer()
+                }
+                .contentShape(Rectangle())
+            }
+            .disabled(!viewModel.canSaveSettings)
             .buttonStyle(.borderless)
         }
     }

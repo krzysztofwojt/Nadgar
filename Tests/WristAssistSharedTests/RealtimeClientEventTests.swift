@@ -7,7 +7,7 @@ struct RealtimeClientEventTests {
         let settings = ProviderSettings(
             hasAPIKey: true,
             model: "gpt-realtime-2",
-            voice: "marin",
+            voice: "MARIN",
             instructions: "Be concise."
         )
 
@@ -33,6 +33,7 @@ struct RealtimeClientEventTests {
         let outputFormat = try #require(output["format"] as? [String: Any])
         #expect(outputFormat["type"] as? String == "audio/pcm")
         #expect(outputFormat["rate"] as? Int == 24_000)
+        #expect(output["voice"] as? String == "marin")
     }
 
     @Test func appendInputAudioEncodesBase64Payload() throws {
