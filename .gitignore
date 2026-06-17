@@ -1,0 +1,14 @@
+.DS_Store
+.build/
+.DerivedData/
+.SourcePackages/
+.swiftpm/
+.xcode-home/
+DerivedData/
+xcuserdata/
+*.xcuserstate
+*.xccheckout
+*.moved-aside
+*.ipa
+*.dSYM.zip
+*.dSYM
