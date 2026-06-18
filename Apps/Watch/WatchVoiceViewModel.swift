@@ -510,6 +510,10 @@ final class WatchVoiceViewModel: ObservableObject {
     }
 
     private func isCurrentRealtimeClient(_ client: RealtimeWebSocketClient) -> Bool {
+        guard state != .stopping else {
+            return false
+        }
+
         guard let currentClient = realtimeClient else {
             return false
         }
