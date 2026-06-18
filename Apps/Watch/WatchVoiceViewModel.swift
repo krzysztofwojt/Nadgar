@@ -9,6 +9,7 @@ final class WatchVoiceViewModel: ObservableObject {
     private static let localBargeInMinimumSpeechMilliseconds = 180
     private static let localBargeInMinimumInputRMS: Float = 0.014
     private static let localBargeInOutputRelativeThreshold: Float = 0.25
+    private static let minimumPushToTalkCommitMilliseconds = 100
     private static let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "com.kwojt.WristAssist.watchkitapp",
         category: "WatchVoiceViewModel"
@@ -470,6 +471,12 @@ final class WatchVoiceViewModel: ObservableObject {
 
         guard chunkCount > 0 else {
             Self.logger.info("ptt recording discarded reason=no_audio")
+            try? await realtimeClient.clearInputAudio()
+            return
+        }
+
+        guard durationMilliseconds >= Self.minimumPushToTalkCommitMilliseconds else {
+            Self.logger.info("ptt recording discarded reason=too_short chunks=\(chunkCount, privacy: .public) durationMs=\(durationMilliseconds, privacy: .public) minDurationMs=\(Self.minimumPushToTalkCommitMilliseconds, privacy: .public)")
             try? await realtimeClient.clearInputAudio()
             return
         }
