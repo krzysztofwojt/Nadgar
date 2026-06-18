@@ -60,6 +60,7 @@ final class WatchVoiceViewModel: ObservableObject {
     private var suppressedInputChunkCount = 0
     private var isPushToTalkHoldActive = false
     private var isPushToTalkStartPending = false
+    private var shouldFinishPushToTalkAfterStart = false
     private var pushToTalkForwardedChunkCount = 0
     private var pushToTalkForwardedMilliseconds = 0
 
@@ -127,6 +128,9 @@ final class WatchVoiceViewModel: ObservableObject {
 
     func endPushToTalkRecording() {
         isPushToTalkHoldActive = false
+        if isPushToTalkStartPending {
+            shouldFinishPushToTalkAfterStart = true
+        }
         Task {
             await finishPushToTalkRecordingIfNeeded()
         }
@@ -366,7 +370,8 @@ final class WatchVoiceViewModel: ObservableObject {
 
     private func interruptAssistantOutput(
         client: RealtimeWebSocketClient,
-        reason: String
+        reason: String,
+        clearInputBuffer: Bool = true
     ) async {
         let interruptedOutput = activeAssistantOutput
         let shouldCancelResponse = isAssistantResponseActive
@@ -384,7 +389,9 @@ final class WatchVoiceViewModel: ObservableObject {
         resetLocalInputRoutingState()
         state = .listening
 
-        try? await client.clearInputAudio()
+        if clearInputBuffer {
+            try? await client.clearInputAudio()
+        }
 
         if shouldCancelResponse {
             try? await client.cancelResponse(responseID: interruptedOutput?.responseID)
@@ -401,6 +408,7 @@ final class WatchVoiceViewModel: ObservableObject {
 
     private func beginPushToTalkRecordingIfNeeded() async {
         guard activeConversationMode == .pushToTalk,
+              isPushToTalkHoldActive,
               !isPushToTalkRecording,
               !isPushToTalkStartPending,
               state != .idle,
@@ -412,30 +420,32 @@ final class WatchVoiceViewModel: ObservableObject {
         }
 
         isPushToTalkStartPending = true
-        defer {
-            isPushToTalkStartPending = false
-        }
-
-        Self.logger.info("ptt recording begin requested state=\(self.state.rawValue, privacy: .public) activeResponse=\(self.isAssistantResponseActive, privacy: .public) pendingPlayback=\(self.hasPendingAssistantPlayback, privacy: .public)")
-
-        if isAssistantResponseActive || hasPendingAssistantPlayback {
-            await interruptAssistantOutput(client: realtimeClient, reason: "ptt_begin")
-        } else {
-            try? await realtimeClient.clearInputAudio()
-            resetLocalInputRoutingState()
-        }
-
-        guard isPushToTalkHoldActive else {
-            Self.logger.info("ptt recording cancelled before start")
-            try? await realtimeClient.clearInputAudio()
-            return
-        }
-
+        shouldFinishPushToTalkAfterStart = false
         pushToTalkForwardedChunkCount = 0
         pushToTalkForwardedMilliseconds = 0
         isPushToTalkRecording = true
         state = .listening
+        resetLocalInputRoutingState()
+
+        Self.logger.info("ptt recording begin requested state=\(self.state.rawValue, privacy: .public) activeResponse=\(self.isAssistantResponseActive, privacy: .public) pendingPlayback=\(self.hasPendingAssistantPlayback, privacy: .public)")
+
+        if isAssistantResponseActive || hasPendingAssistantPlayback {
+            await interruptAssistantOutput(
+                client: realtimeClient,
+                reason: "ptt_begin",
+                clearInputBuffer: false
+            )
+        } else {
+            resetLocalInputRoutingState()
+        }
+
+        isPushToTalkStartPending = false
         Self.logger.info("ptt recording started")
+
+        if shouldFinishPushToTalkAfterStart || !isPushToTalkHoldActive {
+            shouldFinishPushToTalkAfterStart = false
+            await finishPushToTalkRecordingIfNeeded()
+        }
     }
 
     private func finishPushToTalkRecordingIfNeeded() async {
@@ -446,7 +456,13 @@ final class WatchVoiceViewModel: ObservableObject {
             return
         }
 
+        guard !isPushToTalkStartPending else {
+            shouldFinishPushToTalkAfterStart = true
+            return
+        }
+
         isPushToTalkRecording = false
+        shouldFinishPushToTalkAfterStart = false
         let chunkCount = pushToTalkForwardedChunkCount
         let durationMilliseconds = pushToTalkForwardedMilliseconds
         pushToTalkForwardedChunkCount = 0
@@ -522,6 +538,7 @@ final class WatchVoiceViewModel: ObservableObject {
     private func resetPushToTalkState() {
         isPushToTalkHoldActive = false
         isPushToTalkStartPending = false
+        shouldFinishPushToTalkAfterStart = false
         isPushToTalkRecording = false
         pushToTalkForwardedChunkCount = 0
         pushToTalkForwardedMilliseconds = 0
