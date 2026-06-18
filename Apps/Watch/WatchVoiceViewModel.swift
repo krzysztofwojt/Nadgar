@@ -9,6 +9,7 @@ final class WatchVoiceViewModel: ObservableObject {
     private static let localBargeInMinimumSpeechMilliseconds = 180
     private static let localBargeInMinimumInputRMS: Float = 0.014
     private static let localBargeInOutputRelativeThreshold: Float = 0.25
+    private static let minimumPushToTalkCommitMilliseconds = 100
     private static let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "com.kwojt.WristAssist.watchkitapp",
         category: "WatchVoiceViewModel"
@@ -17,6 +18,8 @@ final class WatchVoiceViewModel: ObservableObject {
     @Published private(set) var state: RealtimeConnectionState
     @Published private(set) var settings: ProviderSettings
     @Published private(set) var errorMessage: String?
+    @Published private(set) var selectedConversationMode: RealtimeConversationMode
+    @Published private(set) var isPushToTalkRecording = false
 
     var hasAPIKey: Bool {
         apiKey?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
@@ -35,27 +38,45 @@ final class WatchVoiceViewModel: ObservableObject {
         }
     }
 
+    var canChangeConversationMode: Bool {
+        !isRunning
+    }
+
+    var isPushToTalkSession: Bool {
+        activeConversationMode == .pushToTalk
+    }
+
     private let connectivity: WatchConnectivityClient
     private let configurationStore: WatchConfigurationStore
+    private let conversationModeStore: WatchConversationModeStore
     private var realtimeClient: RealtimeWebSocketClient?
     private var audioPipeline: WatchAudioPipeline?
     private var apiKey: String?
+    private var activeConversationMode: RealtimeConversationMode?
     private var isAssistantResponseActive = false
     private var hasPendingAssistantPlayback = false
     private var activeAssistantOutput: ActiveAssistantOutput?
     private var interruptedAssistantOutputs = Set<ActiveAssistantOutput>()
     private var localBargeInSpeechMilliseconds = 0
     private var suppressedInputChunkCount = 0
+    private var isPushToTalkHoldActive = false
+    private var isPushToTalkStartPending = false
+    private var shouldFinishPushToTalkAfterStart = false
+    private var pushToTalkForwardedChunkCount = 0
+    private var pushToTalkForwardedMilliseconds = 0
 
     init() {
         let configurationStore = WatchConfigurationStore()
         let localConfiguration = configurationStore.loadConfiguration()
+        let conversationModeStore = WatchConversationModeStore()
 
         self.configurationStore = configurationStore
+        self.conversationModeStore = conversationModeStore
         self.connectivity = WatchConnectivityClient()
         self.state = .idle
         self.settings = localConfiguration.settings
         self.apiKey = localConfiguration.apiKey
+        self.selectedConversationMode = conversationModeStore.loadMode()
 
         connectivity.onConfigurationChanged = { [weak self] configuration in
             Task { @MainActor in
@@ -88,6 +109,34 @@ final class WatchVoiceViewModel: ObservableObject {
         }
     }
 
+    func selectConversationMode(_ mode: RealtimeConversationMode) {
+        guard canChangeConversationMode else {
+            Self.logger.info("conversation mode change ignored state=\(self.state.rawValue, privacy: .public)")
+            return
+        }
+
+        selectedConversationMode = mode
+        conversationModeStore.saveMode(mode)
+        Self.logger.info("conversation mode selected mode=\(mode.rawValue, privacy: .public)")
+    }
+
+    func beginPushToTalkRecording() {
+        isPushToTalkHoldActive = true
+        Task {
+            await beginPushToTalkRecordingIfNeeded()
+        }
+    }
+
+    func endPushToTalkRecording() {
+        isPushToTalkHoldActive = false
+        if isPushToTalkStartPending {
+            shouldFinishPushToTalkAfterStart = true
+        }
+        Task {
+            await finishPushToTalkRecordingIfNeeded()
+        }
+    }
+
     private func start() async {
         guard let apiKey, !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             state = .idle
@@ -98,8 +147,10 @@ final class WatchVoiceViewModel: ObservableObject {
 
         do {
             errorMessage = nil
+            let mode = selectedConversationMode
+            activeConversationMode = mode
             state = .connecting
-            Self.logger.info("conversation start state=connecting model=\(self.settings.model, privacy: .public) voice=\(self.settings.voice, privacy: .public)")
+            Self.logger.info("conversation start state=connecting model=\(self.settings.model, privacy: .public) voice=\(self.settings.voice, privacy: .public) mode=\(mode.rawValue, privacy: .public)")
             try? await connectivity.reportState(state)
 
             let client = RealtimeWebSocketClient()
@@ -109,6 +160,7 @@ final class WatchVoiceViewModel: ObservableObject {
             try await client.connect(
                 token: apiKey,
                 settings: settings,
+                mode: mode,
                 eventHandler: { [weak self] event in
                     Task { @MainActor in
                         self?.handle(event)
@@ -152,10 +204,12 @@ final class WatchVoiceViewModel: ObservableObject {
         Self.logger.info("conversation stop requested state=\(self.state.rawValue, privacy: .public)")
         state = .stopping
         resetAssistantOutputState()
+        resetPushToTalkState()
         audioPipeline?.stop()
         audioPipeline = nil
         await realtimeClient?.stop()
         realtimeClient = nil
+        activeConversationMode = nil
         state = .idle
         Self.logger.info("conversation stopped state=idle")
         try? await connectivity.reportState(state)
@@ -242,6 +296,11 @@ final class WatchVoiceViewModel: ObservableObject {
         _ chunk: WatchInputAudioChunk,
         client: RealtimeWebSocketClient
     ) async {
+        if activeConversationMode == .pushToTalk {
+            await handlePushToTalkInputAudio(chunk, client: client)
+            return
+        }
+
         if shouldForwardInputAudioToRealtime {
             resetLocalInputRoutingState()
             try? await client.sendInputAudio(base64PCM16: chunk.base64PCM16)
@@ -259,6 +318,24 @@ final class WatchVoiceViewModel: ObservableObject {
 
         Self.logger.info("decision=local_barge_in inputRMS=\(chunk.inputRMS, privacy: .public) outputRMS=\(chunk.outputRMS, privacy: .public) speechMs=\(self.localBargeInSpeechMilliseconds, privacy: .public) outputPlayedMs=\(chunk.outputPlayedMilliseconds, privacy: .public)")
         await handleBargeIn(client: client, firstInputChunk: chunk)
+    }
+
+    private func handlePushToTalkInputAudio(
+        _ chunk: WatchInputAudioChunk,
+        client: RealtimeWebSocketClient
+    ) async {
+        guard isPushToTalkRecording else {
+            suppressedInputChunkCount += 1
+            if suppressedInputChunkCount == 1 || suppressedInputChunkCount.isMultiple(of: 25) {
+                Self.logger.debug("suppress input ptt_idle count=\(self.suppressedInputChunkCount, privacy: .public) inputRMS=\(chunk.inputRMS, privacy: .public) outputRMS=\(chunk.outputRMS, privacy: .public) outputPlayedMs=\(chunk.outputPlayedMilliseconds, privacy: .public)")
+            }
+            return
+        }
+
+        resetLocalInputRoutingState()
+        pushToTalkForwardedChunkCount += 1
+        pushToTalkForwardedMilliseconds += max(chunk.durationMilliseconds, 0)
+        try? await client.sendInputAudio(base64PCM16: chunk.base64PCM16)
     }
 
     private func handleOutputAudio(
@@ -288,11 +365,20 @@ final class WatchVoiceViewModel: ObservableObject {
         client: RealtimeWebSocketClient,
         firstInputChunk: WatchInputAudioChunk
     ) async {
+        await interruptAssistantOutput(client: client, reason: "barge_in")
+        try? await client.sendInputAudio(base64PCM16: firstInputChunk.base64PCM16)
+    }
+
+    private func interruptAssistantOutput(
+        client: RealtimeWebSocketClient,
+        reason: String,
+        clearInputBuffer: Bool = true
+    ) async {
         let interruptedOutput = activeAssistantOutput
         let shouldCancelResponse = isAssistantResponseActive
         let audioEndMilliseconds = audioPipeline?.stopOutputPlaybackAndClearQueue() ?? 0
 
-        Self.logger.info("barge_in handling responseID=\(interruptedOutput?.responseID ?? "nil", privacy: .public) itemID=\(interruptedOutput?.itemID ?? "nil", privacy: .public) shouldCancel=\(shouldCancelResponse, privacy: .public) audioEndMs=\(audioEndMilliseconds, privacy: .public)")
+        Self.logger.info("assistant interrupt reason=\(reason, privacy: .public) responseID=\(interruptedOutput?.responseID ?? "nil", privacy: .public) itemID=\(interruptedOutput?.itemID ?? "nil", privacy: .public) shouldCancel=\(shouldCancelResponse, privacy: .public) audioEndMs=\(audioEndMilliseconds, privacy: .public)")
 
         if let interruptedOutput {
             interruptedAssistantOutputs.insert(interruptedOutput)
@@ -304,7 +390,9 @@ final class WatchVoiceViewModel: ObservableObject {
         resetLocalInputRoutingState()
         state = .listening
 
-        try? await client.clearInputAudio()
+        if clearInputBuffer {
+            try? await client.clearInputAudio()
+        }
 
         if shouldCancelResponse {
             try? await client.cancelResponse(responseID: interruptedOutput?.responseID)
@@ -317,8 +405,93 @@ final class WatchVoiceViewModel: ObservableObject {
                 audioEndMilliseconds: audioEndMilliseconds
             )
         }
+    }
 
-        try? await client.sendInputAudio(base64PCM16: firstInputChunk.base64PCM16)
+    private func beginPushToTalkRecordingIfNeeded() async {
+        guard activeConversationMode == .pushToTalk,
+              isPushToTalkHoldActive,
+              !isPushToTalkRecording,
+              !isPushToTalkStartPending,
+              state != .idle,
+              state != .failed,
+              state != .stopping,
+              let realtimeClient
+        else {
+            return
+        }
+
+        isPushToTalkStartPending = true
+        shouldFinishPushToTalkAfterStart = false
+        pushToTalkForwardedChunkCount = 0
+        pushToTalkForwardedMilliseconds = 0
+        isPushToTalkRecording = true
+        state = .listening
+        resetLocalInputRoutingState()
+
+        Self.logger.info("ptt recording begin requested state=\(self.state.rawValue, privacy: .public) activeResponse=\(self.isAssistantResponseActive, privacy: .public) pendingPlayback=\(self.hasPendingAssistantPlayback, privacy: .public)")
+
+        if isAssistantResponseActive || hasPendingAssistantPlayback {
+            await interruptAssistantOutput(
+                client: realtimeClient,
+                reason: "ptt_begin",
+                clearInputBuffer: false
+            )
+        } else {
+            resetLocalInputRoutingState()
+        }
+
+        isPushToTalkStartPending = false
+        Self.logger.info("ptt recording started")
+
+        if shouldFinishPushToTalkAfterStart || !isPushToTalkHoldActive {
+            shouldFinishPushToTalkAfterStart = false
+            await finishPushToTalkRecordingIfNeeded()
+        }
+    }
+
+    private func finishPushToTalkRecordingIfNeeded() async {
+        guard activeConversationMode == .pushToTalk,
+              isPushToTalkRecording,
+              let realtimeClient
+        else {
+            return
+        }
+
+        guard !isPushToTalkStartPending else {
+            shouldFinishPushToTalkAfterStart = true
+            return
+        }
+
+        isPushToTalkRecording = false
+        shouldFinishPushToTalkAfterStart = false
+        let chunkCount = pushToTalkForwardedChunkCount
+        let durationMilliseconds = pushToTalkForwardedMilliseconds
+        pushToTalkForwardedChunkCount = 0
+        pushToTalkForwardedMilliseconds = 0
+
+        guard chunkCount > 0 else {
+            Self.logger.info("ptt recording discarded reason=no_audio")
+            try? await realtimeClient.clearInputAudio()
+            return
+        }
+
+        guard durationMilliseconds >= Self.minimumPushToTalkCommitMilliseconds else {
+            Self.logger.info("ptt recording discarded reason=too_short chunks=\(chunkCount, privacy: .public) durationMs=\(durationMilliseconds, privacy: .public) minDurationMs=\(Self.minimumPushToTalkCommitMilliseconds, privacy: .public)")
+            try? await realtimeClient.clearInputAudio()
+            return
+        }
+
+        do {
+            Self.logger.info("ptt recording commit chunks=\(chunkCount, privacy: .public) durationMs=\(durationMilliseconds, privacy: .public)")
+            try await realtimeClient.commitInputAudio()
+            try await realtimeClient.createResponse()
+            state = .speaking
+        } catch {
+            state = .failed
+            errorMessage = error.localizedDescription
+            Self.logger.error("ptt commit failed error=\(error.localizedDescription, privacy: .public)")
+            try? await connectivity.reportState(state)
+        }
     }
 
     private func clearLikelyEchoInput() {
@@ -367,6 +540,15 @@ final class WatchVoiceViewModel: ObservableObject {
         activeAssistantOutput = nil
         interruptedAssistantOutputs.removeAll()
         resetLocalInputRoutingState()
+    }
+
+    private func resetPushToTalkState() {
+        isPushToTalkHoldActive = false
+        isPushToTalkStartPending = false
+        shouldFinishPushToTalkAfterStart = false
+        isPushToTalkRecording = false
+        pushToTalkForwardedChunkCount = 0
+        pushToTalkForwardedMilliseconds = 0
     }
 
     private func isInterruptedOutput(_ metadata: RealtimeOutputAudioMetadata) -> Bool {
@@ -500,6 +682,25 @@ private struct WatchConfigurationStore {
         }
 
         return settings
+    }
+}
+
+private struct WatchConversationModeStore {
+    private let defaults = UserDefaults.standard
+    private let modeKey = "WatchConversationMode"
+
+    func loadMode() -> RealtimeConversationMode {
+        guard let rawValue = defaults.string(forKey: modeKey),
+              let mode = RealtimeConversationMode(rawValue: rawValue)
+        else {
+            return .auto
+        }
+
+        return mode
+    }
+
+    func saveMode(_ mode: RealtimeConversationMode) {
+        defaults.set(mode.rawValue, forKey: modeKey)
     }
 }
 

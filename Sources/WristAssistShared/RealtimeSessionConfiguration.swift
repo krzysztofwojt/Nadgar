@@ -7,9 +7,16 @@ public struct RealtimeSessionConfiguration: Codable, Equatable, Sendable {
         self.session = session
     }
 
-    public init(settings: ProviderSettings) {
-        self.session = RealtimeSession(settings: settings)
+    public init(settings: ProviderSettings, mode: RealtimeConversationMode = .auto) {
+        self.session = RealtimeSession(settings: settings, mode: mode)
     }
+}
+
+public enum RealtimeConversationMode: String, Codable, CaseIterable, Identifiable, Sendable {
+    case auto
+    case pushToTalk
+
+    public var id: String { rawValue }
 }
 
 public struct RealtimeSession: Codable, Equatable, Sendable {
@@ -33,10 +40,10 @@ public struct RealtimeSession: Codable, Equatable, Sendable {
         self.instructions = instructions?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
     }
 
-    public init(settings: ProviderSettings) {
+    public init(settings: ProviderSettings, mode: RealtimeConversationMode = .auto) {
         self.init(
             model: settings.model,
-            audio: RealtimeAudioConfiguration(voice: settings.voice),
+            audio: RealtimeAudioConfiguration(voice: settings.voice, mode: mode),
             instructions: settings.instructions
         )
     }
@@ -62,31 +69,50 @@ public struct RealtimeAudioConfiguration: Codable, Equatable, Sendable {
         self.output = output
     }
 
-    public init(voice: String) {
-        self.init(output: RealtimeAudioOutput(voice: voice))
+    public init(voice: String, mode: RealtimeConversationMode = .auto) {
+        self.init(input: RealtimeAudioInput(mode: mode), output: RealtimeAudioOutput(voice: voice))
     }
 }
 
 public struct RealtimeAudioInput: Codable, Equatable, Sendable {
     public var format: RealtimeAudioFormat
-    public var turnDetection: RealtimeTurnDetection
+    public var turnDetection: RealtimeTurnDetection?
 
     public init(
         format: RealtimeAudioFormat = RealtimeAudioFormat(type: "audio/pcm", rate: 24_000),
-        turnDetection: RealtimeTurnDetection = RealtimeTurnDetection(
-            type: "semantic_vad",
-            eagerness: "low",
-            createResponse: true,
-            interruptResponse: false
-        )
+        turnDetection: RealtimeTurnDetection? = .semanticConversation
     ) {
         self.format = format
         self.turnDetection = turnDetection
     }
 
+    public init(
+        mode: RealtimeConversationMode,
+        format: RealtimeAudioFormat = RealtimeAudioFormat(type: "audio/pcm", rate: 24_000)
+    ) {
+        self.init(format: format, turnDetection: mode == .auto ? .semanticConversation : nil)
+    }
+
     enum CodingKeys: String, CodingKey {
         case format
         case turnDetection = "turn_detection"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.format = try container.decode(RealtimeAudioFormat.self, forKey: .format)
+        self.turnDetection = try container.decodeIfPresent(RealtimeTurnDetection.self, forKey: .turnDetection)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(format, forKey: .format)
+
+        if let turnDetection {
+            try container.encode(turnDetection, forKey: .turnDetection)
+        } else {
+            try container.encodeNil(forKey: .turnDetection)
+        }
     }
 }
 
@@ -137,6 +163,13 @@ public struct RealtimeTurnDetection: Codable, Equatable, Sendable {
         case createResponse = "create_response"
         case interruptResponse = "interrupt_response"
     }
+
+    public static let semanticConversation = RealtimeTurnDetection(
+        type: "semantic_vad",
+        eagerness: "low",
+        createResponse: true,
+        interruptResponse: false
+    )
 }
 
 private extension String {

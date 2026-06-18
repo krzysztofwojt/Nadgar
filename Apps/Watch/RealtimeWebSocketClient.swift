@@ -20,6 +20,7 @@ actor RealtimeWebSocketClient {
     func connect(
         token: String,
         settings: ProviderSettings,
+        mode: RealtimeConversationMode,
         eventHandler: @escaping @Sendable (RealtimeServerEvent) -> Void,
         audioHandler: @escaping @Sendable (RealtimeOutputAudioDelta, Data) -> Void
     ) async throws {
@@ -35,7 +36,7 @@ actor RealtimeWebSocketClient {
             throw RealtimeWebSocketError.invalidURL
         }
 
-        Self.logger.info("connect start model=\(settings.model, privacy: .public) voice=\(settings.voice, privacy: .public)")
+        Self.logger.info("connect start model=\(settings.model, privacy: .public) voice=\(settings.voice, privacy: .public) mode=\(mode.rawValue, privacy: .public)")
 
         var request = URLRequest(url: url)
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -45,7 +46,7 @@ actor RealtimeWebSocketClient {
         task.resume()
 
         do {
-            try await send(.sessionUpdate(RealtimeSession(settings: settings)))
+            try await send(.sessionUpdate(RealtimeSession(settings: settings, mode: mode)))
             try await waitForSessionCreated()
         } catch {
             Self.logger.error("connect failed error=\(error.localizedDescription, privacy: .public)")
@@ -71,6 +72,16 @@ actor RealtimeWebSocketClient {
     func clearInputAudio() async throws {
         Self.logger.info("client -> input_audio_buffer.clear")
         try await send(.clearInputAudio)
+    }
+
+    func commitInputAudio() async throws {
+        Self.logger.info("client -> input_audio_buffer.commit")
+        try await send(.commitInputAudio)
+    }
+
+    func createResponse() async throws {
+        Self.logger.info("client -> response.create")
+        try await send(.createResponse)
     }
 
     func cancelResponse(responseID: String?) async throws {

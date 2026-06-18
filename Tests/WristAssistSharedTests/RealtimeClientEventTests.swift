@@ -41,6 +41,26 @@ struct RealtimeClientEventTests {
         #expect(output["voice"] as? String == "marin")
     }
 
+    @Test func sessionUpdateEncodesPushToTalkWithDisabledTurnDetection() throws {
+        let settings = ProviderSettings(
+            hasAPIKey: true,
+            model: "gpt-realtime-2",
+            voice: "MARIN",
+            instructions: "Be concise."
+        )
+
+        let data = try RealtimeClientEvent
+            .sessionUpdate(RealtimeSession(settings: settings, mode: .pushToTalk))
+            .encodedData()
+
+        let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let session = try #require(object["session"] as? [String: Any])
+        let audio = try #require(session["audio"] as? [String: Any])
+        let input = try #require(audio["input"] as? [String: Any])
+
+        #expect(input["turn_detection"] is NSNull)
+    }
+
     @Test func appendInputAudioEncodesBase64Payload() throws {
         let data = try RealtimeClientEvent.appendInputAudio(base64PCM16: "abc123").encodedData()
         let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
@@ -54,6 +74,20 @@ struct RealtimeClientEventTests {
         let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
 
         #expect(object["type"] as? String == "input_audio_buffer.clear")
+    }
+
+    @Test func commitInputAudioEncodesCommitEvent() throws {
+        let data = try RealtimeClientEvent.commitInputAudio.encodedData()
+        let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+
+        #expect(object["type"] as? String == "input_audio_buffer.commit")
+    }
+
+    @Test func createResponseEncodesCreateEvent() throws {
+        let data = try RealtimeClientEvent.createResponse.encodedData()
+        let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+
+        #expect(object["type"] as? String == "response.create")
     }
 
     @Test func cancelResponseEncodesOptionalResponseID() throws {
