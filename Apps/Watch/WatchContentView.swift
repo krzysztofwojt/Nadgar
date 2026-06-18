@@ -3,7 +3,6 @@ import WristAssistShared
 
 struct WatchContentView: View {
     @StateObject private var viewModel = WatchVoiceViewModel()
-    @State private var selectedConversationMode: ConversationMode = .auto
 
     var body: some View {
         ZStack {
@@ -61,7 +60,15 @@ struct WatchContentView: View {
         .ignoresSafeArea(.container, edges: .bottom)
     }
 
-    private var activeView: some View {
+    @ViewBuilder private var activeView: some View {
+        if viewModel.isPushToTalkSession {
+            pushToTalkActiveView
+        } else {
+            autoActiveView
+        }
+    }
+
+    private var autoActiveView: some View {
         VStack(spacing: 10) {
             microphoneButton
 
@@ -69,6 +76,38 @@ struct WatchContentView: View {
                 .font(.headline)
                 .foregroundStyle(.white)
                 .multilineTextAlignment(.center)
+
+            if let errorMessage = viewModel.errorMessage {
+                Text(errorMessage)
+                    .font(.caption2)
+                    .foregroundStyle(.red)
+                    .lineLimit(3)
+                    .multilineTextAlignment(.center)
+            }
+        }
+    }
+
+    private var pushToTalkActiveView: some View {
+        VStack(spacing: 10) {
+            pushToTalkMicrophoneButton
+
+            Text(pushToTalkStatusText)
+                .font(.headline)
+                .foregroundStyle(.white)
+                .multilineTextAlignment(.center)
+
+            Button {
+                viewModel.startOrStop()
+            } label: {
+                Image(systemName: "stop.fill")
+                    .font(.system(size: 12, weight: .bold))
+                    .frame(width: 36, height: 28)
+                    .background(Color.red)
+                    .foregroundStyle(.white)
+                    .clipShape(Capsule())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Stop conversation")
 
             if let errorMessage = viewModel.errorMessage {
                 Text(errorMessage)
@@ -95,19 +134,62 @@ struct WatchContentView: View {
         .accessibilityLabel(viewModel.isRunning ? "Stop conversation" : "Start conversation")
     }
 
+    private var pushToTalkMicrophoneButton: some View {
+        Image(systemName: "mic.fill")
+            .font(.system(size: 30, weight: .semibold))
+            .frame(width: 76, height: 76)
+            .background(viewModel.isPushToTalkRecording ? Color.green : Color.green.opacity(0.86))
+            .foregroundStyle(.white)
+            .clipShape(Circle())
+            .scaleEffect(viewModel.isPushToTalkRecording ? 1.06 : 1)
+            .animation(.easeInOut(duration: 0.14), value: viewModel.isPushToTalkRecording)
+            .contentShape(Circle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { _ in
+                        viewModel.beginPushToTalkRecording()
+                    }
+                    .onEnded { _ in
+                        viewModel.endPushToTalkRecording()
+                    }
+            )
+            .accessibilityLabel("Hold to talk")
+            .accessibilityAddTraits(.isButton)
+    }
+
+    private var pushToTalkStatusText: String {
+        if viewModel.isPushToTalkRecording {
+            return "Release to send"
+        }
+
+        switch viewModel.state {
+        case .connecting:
+            return "Connecting"
+        case .speaking:
+            return "Speaking"
+        case .stopping:
+            return "Stopping"
+        case .failed:
+            return "Failed"
+        default:
+            return "Hold to talk"
+        }
+    }
+
     private var conversationModeSelector: some View {
         HStack(spacing: 2) {
-            ForEach(ConversationMode.allCases) { mode in
+            ForEach(RealtimeConversationMode.allCases) { mode in
                 Button {
                     withAnimation(.easeInOut(duration: 0.14)) {
-                        selectedConversationMode = mode
+                        viewModel.selectConversationMode(mode)
                     }
                 } label: {
-                    modeSelectorItem(mode.title, isSelected: selectedConversationMode == mode)
+                    modeSelectorItem(mode.title, isSelected: viewModel.selectedConversationMode == mode)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(mode.accessibilityLabel)
-                .accessibilityValue(selectedConversationMode == mode ? "Selected" : "Not selected")
+                .accessibilityValue(viewModel.selectedConversationMode == mode ? "Selected" : "Not selected")
+                .disabled(!viewModel.canChangeConversationMode)
             }
         }
         .padding(3)
@@ -126,12 +208,7 @@ struct WatchContentView: View {
     }
 }
 
-private enum ConversationMode: CaseIterable, Identifiable {
-    case auto
-    case pushToTalk
-
-    var id: Self { self }
-
+private extension RealtimeConversationMode {
     var title: String {
         switch self {
         case .auto:
