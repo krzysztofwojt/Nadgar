@@ -60,6 +60,7 @@ final class SettingsViewModel: ObservableObject {
     func start() {
         guard connectivity == nil else {
             sendSettingsToWatch()
+            connectivity?.sendCurrentKeyStateToReachableWatch()
             return
         }
 
@@ -93,6 +94,7 @@ final class SettingsViewModel: ObservableObject {
         connectivity = controller
         controller.activate()
         sendSettingsToWatch()
+        controller.sendCurrentKeyStateToReachableWatch()
     }
 
     func saveAPIKeyDraft() async {

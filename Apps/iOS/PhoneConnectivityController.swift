@@ -222,7 +222,7 @@ final class PhoneConnectivityController: NSObject, WCSessionDelegate {
         return WatchConfiguration(settings: settings, hasAPIKey: hasAPIKey)
     }
 
-    private func sendCurrentKeyStateToReachableWatch() {
+    func sendCurrentKeyStateToReachableWatch() {
         guard WCSession.isSupported() else { return }
 
         let session = WCSession.default
