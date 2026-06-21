@@ -1,19 +1,15 @@
 import Foundation
 import Security
+import WristAssistShared
 
-protocol CredentialStoring: Sendable {
-    func saveAPIKey(_ apiKey: String) throws
-    func loadAPIKey() throws -> String?
-    func deleteAPIKey() throws
-}
-
-struct KeychainCredentialStore: CredentialStoring {
-    private let service = "com.kwojt.WristAssist.openai"
+struct KeychainCredentialStore: APIKeyStore {
+    private let service = "com.kwojt.WristAssist.OpenAI"
+    private let legacyServices = ["com.kwojt.WristAssist.openai"]
     private let account = "openai-api-key"
 
     func saveAPIKey(_ apiKey: String) throws {
         let data = Data(apiKey.utf8)
-        try deleteAPIKey(ignoringMissing: true)
+        try deleteAPIKey(ignoringMissing: true, services: allServices)
 
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
@@ -30,6 +26,37 @@ struct KeychainCredentialStore: CredentialStoring {
     }
 
     func loadAPIKey() throws -> String? {
+        if let apiKey = try loadAPIKey(from: service) {
+            return apiKey
+        }
+
+        for legacyService in legacyServices {
+            if let apiKey = try loadAPIKey(from: legacyService) {
+                try saveAPIKey(apiKey)
+                return apiKey
+            }
+        }
+
+        return nil
+    }
+
+    func deleteAPIKey() throws {
+        try deleteAPIKey(ignoringMissing: false, services: allServices)
+    }
+
+    func hasAPIKey() -> Bool {
+        guard let apiKey = try? loadAPIKey() else {
+            return false
+        }
+
+        return !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var allServices: [String] {
+        [service] + legacyServices
+    }
+
+    private func loadAPIKey(from service: String) throws -> String? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -58,24 +85,22 @@ struct KeychainCredentialStore: CredentialStoring {
         return apiKey
     }
 
-    func deleteAPIKey() throws {
-        try deleteAPIKey(ignoringMissing: false)
-    }
+    private func deleteAPIKey(ignoringMissing: Bool, services: [String]) throws {
+        for service in services {
+            let query: [String: Any] = [
+                kSecClass as String: kSecClassGenericPassword,
+                kSecAttrService as String: service,
+                kSecAttrAccount as String: account
+            ]
 
-    private func deleteAPIKey(ignoringMissing: Bool) throws {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account
-        ]
+            let status = SecItemDelete(query as CFDictionary)
+            if status == errSecItemNotFound && ignoringMissing {
+                continue
+            }
 
-        let status = SecItemDelete(query as CFDictionary)
-        if status == errSecItemNotFound && ignoringMissing {
-            return
-        }
-
-        guard status == errSecSuccess || status == errSecItemNotFound else {
-            throw KeychainError.unhandledStatus(status)
+            guard status == errSecSuccess || status == errSecItemNotFound else {
+                throw KeychainError.unhandledStatus(status)
+            }
         }
     }
 }

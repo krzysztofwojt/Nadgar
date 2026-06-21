@@ -161,7 +161,7 @@ final class WatchAudioPipeline {
             engine.inputNode.isVoiceProcessingAGCEnabled = true
             Self.logger.info("voice processing enabled bypassed=\(self.engine.inputNode.isVoiceProcessingBypassed, privacy: .public) agc=\(self.engine.inputNode.isVoiceProcessingAGCEnabled, privacy: .public)")
         } catch {
-            Self.logger.error("voice processing failed error=\(error.localizedDescription, privacy: .public)")
+            Self.logger.error("voice processing failed error=\(SecretRedactor.redact(error.localizedDescription), privacy: .public)")
             return
         }
     }

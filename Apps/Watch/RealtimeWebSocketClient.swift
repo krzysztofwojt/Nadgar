@@ -49,7 +49,7 @@ actor RealtimeWebSocketClient {
             try await send(.sessionUpdate(RealtimeSession(settings: settings, mode: mode)))
             try await waitForSessionCreated()
         } catch {
-            Self.logger.error("connect failed error=\(error.localizedDescription, privacy: .public)")
+            Self.logger.error("connect failed error=\(SecretRedactor.redact(error.localizedDescription), privacy: .public)")
             stop()
             throw error
         }
@@ -135,8 +135,9 @@ actor RealtimeWebSocketClient {
                 dispatch(try await receiveEvent())
             } catch {
                 guard !Task.isCancelled else { return }
-                Self.logger.error("receiveLoop failed error=\(error.localizedDescription, privacy: .public)")
-                dispatch(.error(error.localizedDescription))
+                let message = SecretRedactor.redact(error.localizedDescription)
+                Self.logger.error("receiveLoop failed error=\(message, privacy: .public)")
+                dispatch(.error(message))
                 return
             }
         }
@@ -165,8 +166,9 @@ actor RealtimeWebSocketClient {
                     Self.logger.info("server -> session.created")
                     return
                 case .error(let message):
-                    Self.logger.error("server -> error during startup message=\(message, privacy: .public)")
-                    throw RealtimeWebSocketError.serverError(message)
+                    let redactedMessage = SecretRedactor.redact(message)
+                    Self.logger.error("server -> error during startup message=\(redactedMessage, privacy: .public)")
+                    throw RealtimeWebSocketError.serverError(redactedMessage)
                 case .unknown:
                     continue
                 default:
@@ -240,7 +242,7 @@ actor RealtimeWebSocketClient {
         case .audioDelta:
             break
         case .error(let message):
-            Self.logger.error("server -> error message=\(message, privacy: .public)")
+            Self.logger.error("server -> error message=\(SecretRedactor.redact(message), privacy: .public)")
         case .unknown(let type):
             guard type != "response.output_audio_transcript.delta" else {
                 return

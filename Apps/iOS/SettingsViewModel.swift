@@ -19,7 +19,7 @@ final class SettingsViewModel: ObservableObject {
     @Published private(set) var apiKeyValidationError: String?
     @Published private(set) var isSavingAPIKey = false
 
-    private let credentialStore: CredentialStoring
+    private let credentialStore: any APIKeyStore
     private let tokenService: OpenAIRealtimeTokenServing
     private let settingsStore: UserDefaults
     private let safetyIdentifierStore: SafetyIdentifierStore
@@ -27,7 +27,7 @@ final class SettingsViewModel: ObservableObject {
     private var savedAPIKey: String
 
     init(
-        credentialStore: CredentialStoring = KeychainCredentialStore(),
+        credentialStore: any APIKeyStore = KeychainCredentialStore(),
         tokenService: OpenAIRealtimeTokenServing = OpenAIRealtimeTokenService(),
         settingsStore: UserDefaults = .standard,
         safetyIdentifierStore: SafetyIdentifierStore = SafetyIdentifierStore()
@@ -70,6 +70,9 @@ final class SettingsViewModel: ObservableObject {
             apiKeyProvider: { [credentialStore] in
                 try credentialStore.loadAPIKey()
             },
+            pendingWatchKeyDeletionProvider: { [weak self] in
+                self?.pendingWatchKeyDeletion ?? false
+            },
             tokenService: tokenService,
             statusHandler: { [weak self] status in
                 Task { @MainActor in
@@ -79,6 +82,11 @@ final class SettingsViewModel: ObservableObject {
             errorHandler: { [weak self] message in
                 Task { @MainActor in
                     self?.lastError = message
+                }
+            },
+            watchKeyStatusHandler: { [weak self] hasKey in
+                Task { @MainActor in
+                    self?.handleWatchKeyStatus(hasKey: hasKey)
                 }
             }
         )
@@ -101,7 +109,7 @@ final class SettingsViewModel: ObservableObject {
         }
 
         guard !trimmed.isEmpty else {
-            deleteSavedAPIKey()
+            clearAPIKey()
             return
         }
 
@@ -117,6 +125,8 @@ final class SettingsViewModel: ObservableObject {
                 apiKeyDraft = trimmed
             }
             persistSavedSettings(hasAPIKey: true)
+            pendingWatchKeyDeletion = false
+            syncAPIKeyToWatch(trimmed)
             lastError = nil
         } catch {
             apiKeyValidationError = error.localizedDescription
@@ -135,15 +145,27 @@ final class SettingsViewModel: ObservableObject {
         updateAPIKeyDraft("")
     }
 
-    private func deleteSavedAPIKey() {
+    func clearAPIKey() {
+        var localDeleteSucceeded = false
+
         do {
             try credentialStore.deleteAPIKey()
-            apiKeyDraft = ""
-            savedAPIKey = ""
+            clearLocalSavedAPIKeyState()
             persistSavedSettings(hasAPIKey: false)
+            apiKeyValidationError = nil
             lastError = nil
+            localDeleteSucceeded = true
         } catch {
             apiKeyValidationError = error.localizedDescription
+        }
+
+        pendingWatchKeyDeletion = true
+
+        guard connectivity?.sendDeleteAPIKeyToWatch() == true else {
+            watchStatus = localDeleteSucceeded
+                ? "API key deleted locally. Open WristAssist on Apple Watch to finish deleting it there."
+                : "Open WristAssist on Apple Watch to finish deleting the key there."
+            return
         }
     }
 
@@ -171,6 +193,10 @@ final class SettingsViewModel: ObservableObject {
 
     var hasAPIKeyText: Bool {
         !normalizedAPIKey(apiKeyDraft).isEmpty
+    }
+
+    var canClearAPIKey: Bool {
+        !isSavingAPIKey
     }
 
     private func persistSavedSettings(hasAPIKey: Bool) {
@@ -227,6 +253,37 @@ final class SettingsViewModel: ObservableObject {
     }
 
     private static let settingsKey = "ProviderSettings"
+    private static let pendingWatchKeyDeletionKey = "PendingWatchAPIKeyDeletion"
+
+    private var pendingWatchKeyDeletion: Bool {
+        get {
+            settingsStore.bool(forKey: Self.pendingWatchKeyDeletionKey)
+        }
+        set {
+            settingsStore.set(newValue, forKey: Self.pendingWatchKeyDeletionKey)
+        }
+    }
+
+    private func syncAPIKeyToWatch(_ apiKey: String) {
+        guard connectivity?.syncAPIKeyToWatch(apiKey) == true else {
+            watchStatus = "API key saved on iPhone. Open WristAssist on Apple Watch to sync."
+            return
+        }
+    }
+
+    private func clearLocalSavedAPIKeyState() {
+        apiKeyDraft = ""
+        savedAPIKey = ""
+    }
+
+    private func handleWatchKeyStatus(hasKey: Bool) {
+        if hasKey {
+            pendingWatchKeyDeletion = false
+        } else if pendingWatchKeyDeletion {
+            pendingWatchKeyDeletion = false
+            watchStatus = "Watch: API key deleted"
+        }
+    }
 
     private static func loadSettings(from defaults: UserDefaults, hasAPIKey: Bool) -> ProviderSettings {
         guard let data = defaults.data(forKey: settingsKey),
