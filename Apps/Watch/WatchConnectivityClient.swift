@@ -3,8 +3,11 @@ import WatchConnectivity
 import WristAssistShared
 
 final class WatchConnectivityClient: NSObject, WCSessionDelegate {
-    var onConfigurationChanged: ((WatchConfiguration) -> Void)?
-    var onSettingsChanged: ((ProviderSettings) -> Void)?
+    var onConfigurationChanged: (@MainActor (WatchConfiguration) -> Void)?
+    var onSettingsChanged: (@MainActor (ProviderSettings) -> Void)?
+    var onSyncAPIKey: (@MainActor (String) -> Bool)?
+    var onDeleteAPIKey: (@MainActor () -> Bool)?
+    var hasLocalAPIKey: (@MainActor () -> Bool)?
 
     func activate() {
         guard WCSession.isSupported() else { return }
@@ -19,6 +22,9 @@ final class WatchConnectivityClient: NSObject, WCSessionDelegate {
             return configuration.settings
         case .settingsChanged(let settings):
             return settings
+        case .syncAPIKey, .deleteAPIKey, .keyStatusResponse:
+            _ = await handlePhoneMessage(reply)
+            return .default
         case .error(let message), .authUnavailable(let message):
             throw WatchConnectivityClientError.remote(message)
         case .tokenResponse:
@@ -32,7 +38,16 @@ final class WatchConnectivityClient: NSObject, WCSessionDelegate {
         case .configurationChanged(let configuration):
             return configuration
         case .settingsChanged(let settings):
-            return WatchConfiguration(settings: settings, apiKey: nil)
+            let hasKey = await MainActor.run {
+                hasLocalAPIKey?() ?? settings.hasAPIKey
+            }
+            return WatchConfiguration(settings: settings, hasAPIKey: hasKey)
+        case .syncAPIKey, .deleteAPIKey, .keyStatusResponse:
+            _ = await handlePhoneMessage(reply)
+            let hasKey = await MainActor.run {
+                hasLocalAPIKey?() ?? false
+            }
+            return WatchConfiguration(settings: .default, hasAPIKey: hasKey)
         case .error(let message), .authUnavailable(let message):
             throw WatchConnectivityClientError.remote(message)
         case .tokenResponse:
@@ -47,9 +62,16 @@ final class WatchConnectivityClient: NSObject, WCSessionDelegate {
             return token
         case .authUnavailable(let message), .error(let message):
             throw WatchConnectivityClientError.remote(message)
-        case .configurationChanged, .settingsChanged:
+        case .configurationChanged, .settingsChanged, .syncAPIKey, .deleteAPIKey, .keyStatusResponse:
             throw WatchConnectivityClientError.unexpectedReply
         }
+    }
+
+    func requestKeyStatus() async throws {
+        let reply = try await send(.keyStatusRequest)
+        guard let statusReply = await handlePhoneMessage(reply) else { return }
+
+        _ = try await send(statusReply, expectsReply: false)
     }
 
     func reportState(_ state: RealtimeConnectionState) async throws {
@@ -73,6 +95,17 @@ final class WatchConnectivityClient: NSObject, WCSessionDelegate {
         handleIncoming(message)
     }
 
+    func session(
+        _ session: WCSession,
+        didReceiveMessage message: [String: Any],
+        replyHandler: @escaping ([String: Any]) -> Void
+    ) {
+        Task { @MainActor in
+            let reply = await handleIncomingWithReply(message)
+            replyHandler(reply)
+        }
+    }
+
     private func handleIncoming(_ message: [String: Any]) {
         guard let envelope = try? MessageEnvelope(dictionary: message),
               let decoded = try? PhoneToWatchMessage(envelope: envelope)
@@ -80,13 +113,48 @@ final class WatchConnectivityClient: NSObject, WCSessionDelegate {
             return
         }
 
-        switch decoded {
+        Task { @MainActor in
+            _ = await handlePhoneMessage(decoded)
+        }
+    }
+
+    @MainActor
+    private func handleIncomingWithReply(_ message: [String: Any]) async -> [String: Any] {
+        guard let envelope = try? MessageEnvelope(dictionary: message),
+              let decoded = try? PhoneToWatchMessage(envelope: envelope)
+        else {
+            return [:]
+        }
+
+        guard let reply = await handlePhoneMessage(decoded) else {
+            return [:]
+        }
+
+        return (try? reply.envelope().dictionary()) ?? [:]
+    }
+
+    @MainActor
+    @discardableResult
+    private func handlePhoneMessage(_ message: PhoneToWatchMessage) async -> WatchToPhoneMessage? {
+        switch message {
         case .configurationChanged(let configuration):
             onConfigurationChanged?(configuration)
+            return nil
         case .settingsChanged(let settings):
             onSettingsChanged?(settings)
+            return nil
+        case .syncAPIKey(let apiKey):
+            let hasKey = onSyncAPIKey?(apiKey) ?? false
+            return .keyStatusResponse(hasKey: hasKey)
+        case .deleteAPIKey:
+            let hasKey = onDeleteAPIKey?() ?? (hasLocalAPIKey?() ?? false)
+            return .keyStatusResponse(hasKey: hasKey)
+        case .keyStatusResponse(let hasKey):
+            guard !hasKey else { return nil }
+            let remainingKey = onDeleteAPIKey?() ?? (hasLocalAPIKey?() ?? false)
+            return .keyStatusResponse(hasKey: remainingKey)
         case .tokenResponse, .authUnavailable, .error:
-            break
+            return nil
         }
     }
 

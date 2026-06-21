@@ -41,10 +41,10 @@ struct OpenAIRealtimeTokenService: OpenAIRealtimeTokenServing {
                 return "Incorrect API key provided"
             }
 
-            return decoded.error.message
+            return SecretRedactor.redact(decoded.error.message)
         }
 
-        return String(data: data, encoding: .utf8) ?? "OpenAI returned HTTP \(statusCode)."
+        return SecretRedactor.redact(String(data: data, encoding: .utf8) ?? "OpenAI returned HTTP \(statusCode).")
     }
 }
 

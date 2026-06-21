@@ -24,11 +24,21 @@ private func testMessageRoundTrip() throws {
     let decodedRequest = try WatchToPhoneMessage(envelope: requestEnvelope)
     try require(decodedRequest == request)
 
-    let configuration = WatchConfiguration(settings: .default, apiKey: "sk-test")
+    let configuration = WatchConfiguration(settings: .default, hasAPIKey: true)
     let response = PhoneToWatchMessage.configurationChanged(configuration)
     let responseEnvelope = try MessageEnvelope(dictionary: response.envelope().dictionary())
     let decodedResponse = try PhoneToWatchMessage(envelope: responseEnvelope)
     try require(decodedResponse == response)
+
+    let sync = PhoneToWatchMessage.syncAPIKey("sk-test")
+    let syncEnvelope = try MessageEnvelope(dictionary: sync.envelope().dictionary())
+    let decodedSync = try PhoneToWatchMessage(envelope: syncEnvelope)
+    try require(decodedSync == sync)
+
+    let status = WatchToPhoneMessage.keyStatusResponse(hasKey: true)
+    let statusEnvelope = try MessageEnvelope(dictionary: status.envelope().dictionary())
+    let decodedStatus = try WatchToPhoneMessage(envelope: statusEnvelope)
+    try require(decodedStatus == status)
 }
 
 private func testServerEventDecoding() throws {

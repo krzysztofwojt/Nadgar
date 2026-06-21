@@ -75,9 +75,12 @@ final class WatchVoiceViewModel: ObservableObject {
         self.connectivity = WatchConnectivityClient()
         self.state = .idle
         self.settings = localConfiguration.settings
-        self.apiKey = localConfiguration.apiKey
+        self.apiKey = try? configurationStore.loadAPIKey()
         self.selectedConversationMode = conversationModeStore.loadMode()
 
+        connectivity.hasLocalAPIKey = { [weak self] in
+            self?.hasAPIKey ?? false
+        }
         connectivity.onConfigurationChanged = { [weak self] configuration in
             Task { @MainActor in
                 self?.applyConfiguration(configuration)
@@ -88,12 +91,24 @@ final class WatchVoiceViewModel: ObservableObject {
                 self?.applySettingsOnly(settings)
             }
         }
+        connectivity.onSyncAPIKey = { [weak self] apiKey in
+            self?.syncAPIKey(apiKey) ?? false
+        }
+        connectivity.onDeleteAPIKey = { [weak self] in
+            self?.deleteAPIKey() ?? false
+        }
         connectivity.activate()
     }
 
     func requestInitialSettings() async {
         do {
             applyConfiguration(try await connectivity.requestConfiguration())
+        } catch {
+            errorMessage = nil
+        }
+
+        do {
+            try await connectivity.requestKeyStatus()
         } catch {
             errorMessage = nil
         }
@@ -194,8 +209,8 @@ final class WatchVoiceViewModel: ObservableObject {
         } catch {
             await stop()
             state = .failed
-            errorMessage = error.localizedDescription
-            Self.logger.error("conversation failed error=\(error.localizedDescription, privacy: .public)")
+            errorMessage = SecretRedactor.redact(error.localizedDescription)
+            Self.logger.error("conversation failed error=\(self.errorMessage ?? "", privacy: .public)")
             try? await connectivity.reportState(state)
         }
     }
@@ -216,19 +231,11 @@ final class WatchVoiceViewModel: ObservableObject {
     }
 
     private func applyConfiguration(_ configuration: WatchConfiguration) {
-        let shouldStop = configuration.apiKey == nil && isRunning
-
         do {
-            try configurationStore.saveConfiguration(configuration)
-            apiKey = configuration.apiKey
-            settings = configuration.settings
+            let updatedSettings = localSettings(from: configuration.settings)
+            try configurationStore.saveSettings(updatedSettings)
+            settings = updatedSettings
             errorMessage = nil
-
-            if shouldStop {
-                Task {
-                    await stop()
-                }
-            }
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -245,6 +252,49 @@ final class WatchVoiceViewModel: ObservableObject {
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+
+    private func syncAPIKey(_ apiKey: String) -> Bool {
+        do {
+            try configurationStore.saveAPIKey(apiKey)
+            self.apiKey = apiKey
+            settings.hasAPIKey = true
+            try configurationStore.saveSettings(settings)
+            errorMessage = nil
+            return true
+        } catch {
+            errorMessage = error.localizedDescription
+            return hasAPIKey
+        }
+    }
+
+    private func deleteAPIKey() -> Bool {
+        let shouldStop = isRunning
+
+        do {
+            try configurationStore.deleteAPIKey()
+            apiKey = nil
+            settings.hasAPIKey = false
+            try configurationStore.saveSettings(settings)
+            errorMessage = nil
+
+            if shouldStop {
+                Task {
+                    await stop()
+                }
+            }
+
+            return false
+        } catch {
+            errorMessage = error.localizedDescription
+            return hasAPIKey
+        }
+    }
+
+    private func localSettings(from incomingSettings: ProviderSettings) -> ProviderSettings {
+        var updatedSettings = incomingSettings
+        updatedSettings.hasAPIKey = hasAPIKey
+        return updatedSettings
     }
 
     private func handle(_ event: RealtimeServerEvent) {
@@ -278,11 +328,11 @@ final class WatchVoiceViewModel: ObservableObject {
             state = .speaking
         case .error(let message):
             guard !isRecoverableRealtimeError(message) else {
-                Self.logger.info("server recoverable_error ignored message=\(message, privacy: .public)")
+                Self.logger.info("server recoverable_error ignored message=\(SecretRedactor.redact(message), privacy: .public)")
                 return
             }
             state = .failed
-            errorMessage = message
+            errorMessage = SecretRedactor.redact(message)
         case .unknown:
             break
         }
@@ -498,13 +548,13 @@ final class WatchVoiceViewModel: ObservableObject {
             state = .speaking
         } catch {
             guard isCurrentRealtimeClient(realtimeClient) else {
-                Self.logger.info("ptt commit error ignored reason=stale_client error=\(error.localizedDescription, privacy: .public)")
+                Self.logger.info("ptt commit error ignored reason=stale_client error=\(SecretRedactor.redact(error.localizedDescription), privacy: .public)")
                 return
             }
 
             state = .failed
-            errorMessage = error.localizedDescription
-            Self.logger.error("ptt commit failed error=\(error.localizedDescription, privacy: .public)")
+            errorMessage = SecretRedactor.redact(error.localizedDescription)
+            Self.logger.error("ptt commit failed error=\(self.errorMessage ?? "", privacy: .public)")
             try? await connectivity.reportState(state)
         }
     }
@@ -682,23 +732,28 @@ private struct WatchConfigurationStore {
 
     func loadConfiguration() -> WatchConfiguration {
         let settings = loadSettings()
-        let apiKey = try? apiKeyStore.loadAPIKey()
-        return WatchConfiguration(settings: settings, apiKey: apiKey)
+        return WatchConfiguration(settings: settings, hasAPIKey: apiKeyStore.hasAPIKey())
     }
 
     func saveConfiguration(_ configuration: WatchConfiguration) throws {
-        if let apiKey = configuration.apiKey {
-            try apiKeyStore.saveAPIKey(apiKey)
-        } else {
-            try apiKeyStore.deleteAPIKey()
-        }
-
         try saveSettings(configuration.settings)
     }
 
     func saveSettings(_ settings: ProviderSettings) throws {
         let data = try JSONEncoder().encode(settings)
         defaults.set(data, forKey: settingsKey)
+    }
+
+    func saveAPIKey(_ apiKey: String) throws {
+        try apiKeyStore.saveAPIKey(apiKey)
+    }
+
+    func loadAPIKey() throws -> String? {
+        try apiKeyStore.loadAPIKey()
+    }
+
+    func deleteAPIKey() throws {
+        try apiKeyStore.deleteAPIKey()
     }
 
     private func loadSettings() -> ProviderSettings {
@@ -731,29 +786,48 @@ private struct WatchConversationModeStore {
     }
 }
 
-private struct WatchAPIKeyStore {
-    private let service = "com.kwojt.WristAssist.watch.openai"
+private struct WatchAPIKeyStore: APIKeyStore {
+    private let service = "com.kwojt.WristAssist.OpenAI"
+    private let legacyServices = ["com.kwojt.WristAssist.watch.openai"]
     private let account = "openai-api-key"
 
     func saveAPIKey(_ apiKey: String) throws {
-        let data = Data(apiKey.utf8)
-        try deleteAPIKey()
-
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-            kSecValueData as String: data,
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        ]
-
-        let status = SecItemAdd(query as CFDictionary, nil)
-        guard status == errSecSuccess else {
-            throw WatchAPIKeyStoreError.unhandledStatus(status)
-        }
+        try upsertAPIKey(apiKey, service: service)
+        try deleteAPIKey(services: legacyServices)
     }
 
     func loadAPIKey() throws -> String? {
+        if let apiKey = try loadAPIKey(from: service) {
+            return apiKey
+        }
+
+        for legacyService in legacyServices {
+            if let apiKey = try loadAPIKey(from: legacyService) {
+                try saveAPIKey(apiKey)
+                return apiKey
+            }
+        }
+
+        return nil
+    }
+
+    func deleteAPIKey() throws {
+        try deleteAPIKey(services: allServices)
+    }
+
+    func hasAPIKey() -> Bool {
+        guard let apiKey = try? loadAPIKey() else {
+            return false
+        }
+
+        return !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var allServices: [String] {
+        [service] + legacyServices
+    }
+
+    private func loadAPIKey(from service: String) throws -> String? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -782,16 +856,49 @@ private struct WatchAPIKeyStore {
         return apiKey
     }
 
-    func deleteAPIKey() throws {
+    private func upsertAPIKey(_ apiKey: String, service: String) throws {
+        let data = Data(apiKey.utf8)
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account
         ]
 
-        let status = SecItemDelete(query as CFDictionary)
-        guard status == errSecSuccess || status == errSecItemNotFound else {
-            throw WatchAPIKeyStoreError.unhandledStatus(status)
+        let update: [String: Any] = [
+            kSecValueData as String: data
+        ]
+
+        let updateStatus = SecItemUpdate(query as CFDictionary, update as CFDictionary)
+        if updateStatus == errSecSuccess {
+            return
+        }
+
+        guard updateStatus == errSecItemNotFound else {
+            throw WatchAPIKeyStoreError.unhandledStatus(updateStatus)
+        }
+
+        var addQuery = query
+        addQuery[kSecValueData as String] = data
+        addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+
+        let addStatus = SecItemAdd(addQuery as CFDictionary, nil)
+        guard addStatus == errSecSuccess else {
+            throw WatchAPIKeyStoreError.unhandledStatus(addStatus)
+        }
+    }
+
+    private func deleteAPIKey(services: [String]) throws {
+        for service in services {
+            let query: [String: Any] = [
+                kSecClass as String: kSecClassGenericPassword,
+                kSecAttrService as String: service,
+                kSecAttrAccount as String: account
+            ]
+
+            let status = SecItemDelete(query as CFDictionary)
+            guard status == errSecSuccess || status == errSecItemNotFound else {
+                throw WatchAPIKeyStoreError.unhandledStatus(status)
+            }
         }
     }
 }

@@ -17,11 +17,15 @@ struct ContentView: View {
 
                     if hasAPIKeyText {
                         HStack {
-                            Button("Clear") {
+                            Button(role: .destructive) {
                                 isAPIKeyVisible = false
                                 isAPIKeyFieldFocused = false
-                                viewModel.clearAPIKeyDraft()
+                                viewModel.clearAPIKeyButtonTapped()
+                            } label: {
+                                Text("Clear")
+                                    .foregroundStyle(.red)
                             }
+                            .disabled(!viewModel.canClearAPIKey)
 
                             Spacer()
 
@@ -32,10 +36,12 @@ struct ContentView: View {
                         }
                         .buttonStyle(.borderless)
                     } else {
-                        Button("Paste") {
+                        Button {
                             isAPIKeyVisible = false
                             isAPIKeyFieldFocused = false
                             viewModel.updateAPIKeyDraft(UIPasteboard.general.string ?? "")
+                        } label: {
+                            fullWidthButtonLabel("Paste")
                         }
                         .buttonStyle(.borderless)
                     }
@@ -103,20 +109,26 @@ struct ContentView: View {
         .disabled(viewModel.isSavingAPIKey)
     }
 
+    private func fullWidthButtonLabel(_ title: String) -> some View {
+        HStack {
+            Text(title)
+            Spacer()
+        }
+        .contentShape(Rectangle())
+    }
+
     @ViewBuilder
     private var saveAPIKeyButton: some View {
         if viewModel.hasUnsavedAPIKeyChanges {
-            HStack {
-                Button("Save") {
-                    isAPIKeyFieldFocused = false
-                    Task {
-                        await viewModel.saveAPIKeyDraft()
-                    }
+            Button {
+                isAPIKeyFieldFocused = false
+                Task {
+                    await viewModel.saveAPIKeyDraft()
                 }
-                .disabled(!viewModel.canSaveAPIKey)
-
-                Spacer()
+            } label: {
+                fullWidthButtonLabel("Save")
             }
+            .disabled(!viewModel.canSaveAPIKey)
             .buttonStyle(.borderless)
         }
     }
