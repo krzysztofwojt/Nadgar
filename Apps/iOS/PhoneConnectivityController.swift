@@ -104,10 +104,26 @@ final class PhoneConnectivityController: NSObject, WCSessionDelegate {
             Task {
                 do {
                     sendConfiguration(try await currentConfiguration())
+                    sendCurrentKeyStateToReachableWatch()
                 } catch {
                     await MainActor.run {
                         errorHandler(error.localizedDescription)
                     }
+                }
+            }
+        }
+    }
+
+    func sessionReachabilityDidChange(_ session: WCSession) {
+        guard session.isReachable else { return }
+
+        Task {
+            do {
+                sendConfiguration(try await currentConfiguration())
+                sendCurrentKeyStateToReachableWatch()
+            } catch {
+                await MainActor.run {
+                    errorHandler(error.localizedDescription)
                 }
             }
         }
@@ -204,6 +220,34 @@ final class PhoneConnectivityController: NSObject, WCSessionDelegate {
         let settings = await MainActor.run { settingsProvider() }
         let hasAPIKey = try apiKeyProvider()?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
         return WatchConfiguration(settings: settings, hasAPIKey: hasAPIKey)
+    }
+
+    private func sendCurrentKeyStateToReachableWatch() {
+        guard WCSession.isSupported() else { return }
+
+        let session = WCSession.default
+        guard session.activationState == .activated, session.isReachable else { return }
+
+        Task {
+            do {
+                let hasPendingWatchDeletion = await MainActor.run {
+                    pendingWatchKeyDeletionProvider()
+                }
+                if hasPendingWatchDeletion {
+                    sendDeleteAPIKeyToWatch()
+                    return
+                }
+
+                if let apiKey = try apiKeyProvider(),
+                   !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    syncAPIKeyToWatch(apiKey)
+                }
+            } catch {
+                await MainActor.run {
+                    errorHandler(error.localizedDescription)
+                }
+            }
+        }
     }
 
     @discardableResult

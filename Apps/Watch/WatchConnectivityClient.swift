@@ -69,7 +69,9 @@ final class WatchConnectivityClient: NSObject, WCSessionDelegate {
 
     func requestKeyStatus() async throws {
         let reply = try await send(.keyStatusRequest)
-        _ = await handlePhoneMessage(reply)
+        guard let statusReply = await handlePhoneMessage(reply) else { return }
+
+        _ = try await send(statusReply, expectsReply: false)
     }
 
     func reportState(_ state: RealtimeConnectionState) async throws {
