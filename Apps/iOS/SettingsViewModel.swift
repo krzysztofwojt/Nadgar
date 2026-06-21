@@ -147,26 +147,31 @@ final class SettingsViewModel: ObservableObject {
         updateAPIKeyDraft("")
     }
 
-    func clearAPIKey() {
-        var localDeleteSucceeded = false
+    func clearAPIKeyButtonTapped() {
+        guard !hasUnsavedAPIKeyChanges else {
+            clearAPIKeyDraft()
+            return
+        }
 
+        clearAPIKey()
+    }
+
+    func clearAPIKey() {
         do {
             try credentialStore.deleteAPIKey()
             clearLocalSavedAPIKeyState()
             persistSavedSettings(hasAPIKey: false)
             apiKeyValidationError = nil
             lastError = nil
-            localDeleteSucceeded = true
         } catch {
             apiKeyValidationError = error.localizedDescription
+            return
         }
 
         pendingWatchKeyDeletion = true
 
         guard connectivity?.sendDeleteAPIKeyToWatch() == true else {
-            watchStatus = localDeleteSucceeded
-                ? "API key deleted locally. Open WristAssist on Apple Watch to finish deleting it there."
-                : "Open WristAssist on Apple Watch to finish deleting the key there."
+            watchStatus = "API key deleted locally. Open WristAssist on Apple Watch to finish deleting it there."
             return
         }
     }

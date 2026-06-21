@@ -20,7 +20,7 @@ struct ContentView: View {
                             Button(role: .destructive) {
                                 isAPIKeyVisible = false
                                 isAPIKeyFieldFocused = false
-                                viewModel.clearAPIKey()
+                                viewModel.clearAPIKeyButtonTapped()
                             } label: {
                                 Text("Clear")
                                     .foregroundStyle(.red)
