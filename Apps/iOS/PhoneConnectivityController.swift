@@ -156,6 +156,12 @@ final class PhoneConnectivityController: NSObject, WCSessionDelegate {
         }
     }
 
+    func session(_ session: WCSession, didReceiveMessage message: [String: Any]) {
+        Task {
+            _ = await handleMessage(message)
+        }
+    }
+
     private func handleMessage(_ message: [String: Any]) async -> [String: Any] {
         do {
             let envelope = try MessageEnvelope(dictionary: message)
