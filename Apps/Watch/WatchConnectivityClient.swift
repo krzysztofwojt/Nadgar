@@ -149,7 +149,11 @@ final class WatchConnectivityClient: NSObject, WCSessionDelegate {
         case .deleteAPIKey:
             let hasKey = onDeleteAPIKey?() ?? (hasLocalAPIKey?() ?? false)
             return .keyStatusResponse(hasKey: hasKey)
-        case .keyStatusResponse, .tokenResponse, .authUnavailable, .error:
+        case .keyStatusResponse(let hasKey):
+            guard !hasKey else { return nil }
+            let remainingKey = onDeleteAPIKey?() ?? (hasLocalAPIKey?() ?? false)
+            return .keyStatusResponse(hasKey: remainingKey)
+        case .tokenResponse, .authUnavailable, .error:
             return nil
         }
     }
