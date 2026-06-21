@@ -279,9 +279,9 @@ final class SettingsViewModel: ObservableObject {
     }
 
     private func handleWatchKeyStatus(hasKey: Bool) {
-        if hasKey {
-            pendingWatchKeyDeletion = false
-        } else if pendingWatchKeyDeletion {
+        guard pendingWatchKeyDeletion else { return }
+
+        if !hasKey {
             pendingWatchKeyDeletion = false
             watchStatus = "Watch: API key deleted"
         }
