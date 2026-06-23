@@ -128,12 +128,13 @@ struct WatchContentView: View {
         Image(systemName: "mic.fill")
             .font(.system(size: 22, weight: .semibold))
             .frame(width: 66, height: 44)
-            .background(microphoneButtonColor)
             .foregroundStyle(.white)
-            .clipShape(Capsule(style: .continuous))
+            .pttGlassButton(tint: microphoneButtonTint, isInteractive: viewModel.hasAPIKey && !viewModel.isProcessing)
             .scaleEffect(viewModel.isPushToTalkRecording ? 1.08 : 1)
-            .shadow(color: .black.opacity(0.35), radius: 8, x: 0, y: 3)
+            .shadow(color: microphoneButtonTint.opacity(0.32), radius: 10, x: 0, y: 3)
+            .shadow(color: .black.opacity(0.3), radius: 8, x: 0, y: 3)
             .animation(.easeInOut(duration: 0.14), value: viewModel.isPushToTalkRecording)
+            .animation(.easeInOut(duration: 0.18), value: viewModel.isProcessing)
             .contentShape(Capsule(style: .continuous))
             .gesture(
                 DragGesture(minimumDistance: 0)
@@ -149,13 +150,13 @@ struct WatchContentView: View {
             .accessibilityAddTraits(.isButton)
     }
 
-    private var microphoneButtonColor: Color {
+    private var microphoneButtonTint: Color {
         if viewModel.isPushToTalkRecording {
-            return .red
+            return Color(red: 1, green: 0.12, blue: 0.18)
         }
 
         if viewModel.isProcessing {
-            return Color.white.opacity(0.2)
+            return Color(red: 0.5, green: 0.55, blue: 0.62).opacity(0.72)
         }
 
         return chatAccentColor
@@ -164,6 +165,38 @@ struct WatchContentView: View {
     private func scrollToBottom(_ proxy: ScrollViewProxy) {
         withAnimation(.easeOut(duration: 0.18)) {
             proxy.scrollTo(bottomID, anchor: .bottom)
+        }
+    }
+}
+
+private extension View {
+    @ViewBuilder
+    func pttGlassButton(tint: Color, isInteractive: Bool) -> some View {
+        if #available(watchOS 26.0, *) {
+            self
+                .background {
+                    Capsule(style: .continuous)
+                        .fill(tint.opacity(0.18))
+                }
+                .glassEffect(
+                    .regular.tint(tint.opacity(0.72)).interactive(isInteractive),
+                    in: Capsule(style: .continuous)
+                )
+                .overlay {
+                    Capsule(style: .continuous)
+                        .stroke(.white.opacity(0.3), lineWidth: 0.8)
+                }
+        } else {
+            self
+                .background(.ultraThinMaterial, in: Capsule(style: .continuous))
+                .overlay {
+                    Capsule(style: .continuous)
+                        .fill(tint.opacity(0.42))
+                }
+                .overlay {
+                    Capsule(style: .continuous)
+                        .stroke(.white.opacity(0.25), lineWidth: 0.8)
+                }
         }
     }
 }
