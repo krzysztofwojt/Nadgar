@@ -270,13 +270,14 @@ final class WatchVoiceViewModel: ObservableObject {
             Self.logger.info("ptt assistant response appended characters=\(assistantText.count, privacy: .public)")
         } catch {
             guard activeTurnID == turnID else { return }
-            failTranscribingPlaceholder(id: userPlaceholderID)
-            failAssistantPlaceholder(id: assistantPlaceholderID)
+            let failureDescription = error.localizedDescription
+            failTranscribingPlaceholder(id: userPlaceholderID, errorDescription: failureDescription)
+            failAssistantPlaceholder(id: assistantPlaceholderID, errorDescription: failureDescription)
             pttState = .failed
-            errorMessage = error.localizedDescription
+            errorMessage = failureDescription
             recorder.cancel()
             await prewarmRecorderIfPossible()
-            Self.logger.error("ptt turn failed error=\(error.localizedDescription, privacy: .public)")
+            Self.logger.error("ptt turn failed error=\(failureDescription, privacy: .public)")
         }
     }
 
@@ -437,11 +438,14 @@ final class WatchVoiceViewModel: ObservableObject {
         }
     }
 
-    private func failTranscribingPlaceholder(id: UUID) {
+    private func failTranscribingPlaceholder(id: UUID, errorDescription: String) {
         updateMessage(id: id) { message in
             guard message.isPlaceholder else { return }
 
-            message.text = Self.transcriptionFailedPlaceholderText
+            message.text = failurePlaceholderText(
+                prefix: Self.transcriptionFailedPlaceholderText,
+                errorDescription: errorDescription
+            )
             message.isPlaceholder = true
         }
     }
@@ -470,13 +474,22 @@ final class WatchVoiceViewModel: ObservableObject {
         }
     }
 
-    private func failAssistantPlaceholder(id: UUID?) {
+    private func failAssistantPlaceholder(id: UUID?, errorDescription: String) {
         guard let id else { return }
 
         updateMessage(id: id) { message in
-            message.text = Self.assistantFailedPlaceholderText
+            message.text = failurePlaceholderText(
+                prefix: Self.assistantFailedPlaceholderText,
+                errorDescription: errorDescription
+            )
             message.isPlaceholder = true
         }
+    }
+
+    private func failurePlaceholderText(prefix: String, errorDescription: String) -> String {
+        let trimmedDescription = errorDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedDescription.isEmpty else { return prefix }
+        return "\(prefix): \(trimmedDescription)"
     }
 
     private func removeMessage(id: UUID) {
