@@ -131,8 +131,9 @@ struct WatchContentView: View {
             .foregroundStyle(.white)
             .pttGlassButton(tint: microphoneButtonTint, isInteractive: viewModel.hasAPIKey && !viewModel.isProcessing)
             .scaleEffect(viewModel.isPushToTalkRecording ? 1.08 : 1)
-            .shadow(color: microphoneButtonTint.opacity(0.32), radius: 10, x: 0, y: 3)
-            .shadow(color: .black.opacity(0.3), radius: 8, x: 0, y: 3)
+            .shadow(color: microphoneButtonTint.opacity(0.34), radius: 18, x: 0, y: 0)
+            .shadow(color: microphoneButtonTint.opacity(0.2), radius: 7, x: 0, y: 2)
+            .shadow(color: .black.opacity(0.28), radius: 8, x: 0, y: 3)
             .animation(.easeInOut(duration: 0.14), value: viewModel.isPushToTalkRecording)
             .animation(.easeInOut(duration: 0.18), value: viewModel.isProcessing)
             .contentShape(Capsule(style: .continuous))
@@ -156,7 +157,7 @@ struct WatchContentView: View {
         }
 
         if viewModel.isProcessing {
-            return Color(red: 0.5, green: 0.55, blue: 0.62).opacity(0.72)
+            return Color(red: 0.5, green: 0.55, blue: 0.62)
         }
 
         return chatAccentColor
@@ -175,27 +176,31 @@ private extension View {
         if #available(watchOS 26.0, *) {
             self
                 .background {
-                    Capsule(style: .continuous)
-                        .fill(tint.opacity(0.18))
+                    ZStack {
+                        Capsule(style: .continuous)
+                            .fill(.white.opacity(0.08))
+                        Capsule(style: .continuous)
+                            .fill(tint.opacity(0.04))
+                    }
                 }
                 .glassEffect(
-                    .regular.tint(tint.opacity(0.72)).interactive(isInteractive),
+                    .regular.tint(tint.opacity(0.3)).interactive(isInteractive),
                     in: Capsule(style: .continuous)
                 )
                 .overlay {
                     Capsule(style: .continuous)
-                        .stroke(.white.opacity(0.3), lineWidth: 0.8)
+                        .stroke(.white.opacity(0.58), lineWidth: 0.8)
                 }
         } else {
             self
                 .background(.ultraThinMaterial, in: Capsule(style: .continuous))
                 .overlay {
                     Capsule(style: .continuous)
-                        .fill(tint.opacity(0.42))
+                        .fill(tint.opacity(0.12))
                 }
                 .overlay {
                     Capsule(style: .continuous)
-                        .stroke(.white.opacity(0.25), lineWidth: 0.8)
+                        .stroke(.white.opacity(0.46), lineWidth: 0.8)
                 }
         }
     }
