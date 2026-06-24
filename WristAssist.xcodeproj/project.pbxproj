@@ -26,6 +26,9 @@
 		000000000000000000000120 /* OpenAIResponsesClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000220 /* OpenAIResponsesClient.swift */; };
 		000000000000000000000121 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000221 /* Assets.xcassets */; };
 		000000000000000000000122 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000222 /* Assets.xcassets */; };
+		000000000000000000000123 /* WristAssistComplicationBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000223 /* WristAssistComplicationBundle.swift */; };
+		000000000000000000000124 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000225 /* Assets.xcassets */; };
+		000000000000000000000125 /* WristAssist Watch Complication Extension.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = 000000000000000000000304 /* WristAssist Watch Complication Extension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -35,6 +38,13 @@
 			proxyType = 1;
 			remoteGlobalIDString = 000000000000000000000012;
 			remoteInfo = "WristAssist Watch App";
+		};
+		000000000000000000000503 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 000000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 000000000000000000000013;
+			remoteInfo = "WristAssist Watch Complication Extension";
 		};
 /* End PBXContainerItemProxy section */
 
@@ -48,6 +58,17 @@
 				000000000000000000000109 /* WristAssist Watch App.app in Embed Watch Content */,
 			);
 			name = "Embed Watch Content";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		000000000000000000000602 /* Embed App Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				000000000000000000000125 /* WristAssist Watch Complication Extension.appex in Embed App Extensions */,
+			);
+			name = "Embed App Extensions";
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXCopyFilesBuildPhase section */
@@ -71,9 +92,13 @@
 		000000000000000000000220 /* OpenAIResponsesClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenAIResponsesClient.swift; sourceTree = "<group>"; };
 		000000000000000000000221 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		000000000000000000000222 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		000000000000000000000223 /* WristAssistComplicationBundle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WristAssistComplicationBundle.swift; sourceTree = "<group>"; };
+		000000000000000000000224 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		000000000000000000000225 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		000000000000000000000301 /* WristAssist.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = WristAssist.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		000000000000000000000302 /* WristAssist Watch App.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "WristAssist Watch App.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		000000000000000000000303 /* Package.swift */ = {isa = PBXFileReference; lastKnownFileType = text; path = Package.swift; sourceTree = "<group>"; };
+		000000000000000000000304 /* WristAssist Watch Complication Extension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = "WristAssist Watch Complication Extension.appex"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -90,6 +115,13 @@
 			buildActionMask = 2147483647;
 			files = (
 				000000000000000000000117 /* WristAssistShared in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		000000000000000000000703 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -110,6 +142,7 @@
 			children = (
 				000000000000000000000804 /* iOS */,
 				000000000000000000000805 /* Watch */,
+				000000000000000000000806 /* WatchComplication */,
 			);
 			path = Apps;
 			sourceTree = "<group>";
@@ -119,6 +152,7 @@
 			children = (
 				000000000000000000000301 /* WristAssist.app */,
 				000000000000000000000302 /* WristAssist Watch App.app */,
+				000000000000000000000304 /* WristAssist Watch Complication Extension.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -155,6 +189,16 @@
 			path = Watch;
 			sourceTree = "<group>";
 		};
+		000000000000000000000806 /* WatchComplication */ = {
+			isa = PBXGroup;
+			children = (
+				000000000000000000000223 /* WristAssistComplicationBundle.swift */,
+				000000000000000000000224 /* Info.plist */,
+				000000000000000000000225 /* Assets.xcassets */,
+			);
+			path = WatchComplication;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -187,10 +231,12 @@
 				000000000000000000000712 /* Sources */,
 				000000000000000000000702 /* Frameworks */,
 				000000000000000000000722 /* Resources */,
+				000000000000000000000602 /* Embed App Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				000000000000000000000504 /* PBXTargetDependency */,
 			);
 			name = "WristAssist Watch App";
 			packageProductDependencies = (
@@ -199,6 +245,25 @@
 			productName = "WristAssist Watch App";
 			productReference = 000000000000000000000302 /* WristAssist Watch App.app */;
 			productType = "com.apple.product-type.application";
+		};
+		000000000000000000000013 /* WristAssist Watch Complication Extension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 000000000000000000000903 /* Build configuration list for PBXNativeTarget "WristAssist Watch Complication Extension" */;
+			buildPhases = (
+				000000000000000000000713 /* Sources */,
+				000000000000000000000703 /* Frameworks */,
+				000000000000000000000723 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = "WristAssist Watch Complication Extension";
+			packageProductDependencies = (
+			);
+			productName = "WristAssist Watch Complication Extension";
+			productReference = 000000000000000000000304 /* WristAssist Watch Complication Extension.appex */;
+			productType = "com.apple.product-type.app-extension";
 		};
 /* End PBXNativeTarget section */
 
@@ -214,6 +279,9 @@
 						CreatedOnToolsVersion = 16.0;
 					};
 					000000000000000000000012 = {
+						CreatedOnToolsVersion = 16.0;
+					};
+					000000000000000000000013 = {
 						CreatedOnToolsVersion = 16.0;
 					};
 				};
@@ -236,6 +304,7 @@
 			targets = (
 				000000000000000000000011 /* WristAssist iOS */,
 				000000000000000000000012 /* WristAssist Watch App */,
+				000000000000000000000013 /* WristAssist Watch Complication Extension */,
 			);
 		};
 /* End PBXProject section */
@@ -254,6 +323,14 @@
 			buildActionMask = 2147483647;
 			files = (
 				000000000000000000000122 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		000000000000000000000723 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				000000000000000000000124 /* Assets.xcassets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -288,6 +365,14 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		000000000000000000000713 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				000000000000000000000123 /* WristAssistComplicationBundle.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -295,6 +380,11 @@
 			isa = PBXTargetDependency;
 			target = 000000000000000000000012 /* WristAssist Watch App */;
 			targetProxy = 000000000000000000000501 /* PBXContainerItemProxy */;
+		};
+		000000000000000000000504 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 000000000000000000000013 /* WristAssist Watch Complication Extension */;
+			targetProxy = 000000000000000000000503 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -515,6 +605,60 @@
 			};
 			name = Release;
 		};
+		000000000000000000000917 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = DVXV85L4UG;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Apps/WatchComplication/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = net.kwojt.WristAssist.watchkitapp.complication;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = watchos;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "watchos watchsimulator";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 4;
+				WATCHOS_DEPLOYMENT_TARGET = 11.0;
+			};
+			name = Debug;
+		};
+		000000000000000000000918 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = DVXV85L4UG;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Apps/WatchComplication/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = net.kwojt.WristAssist.watchkitapp.complication;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = watchos;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "watchos watchsimulator";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 4;
+				WATCHOS_DEPLOYMENT_TARGET = 11.0;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -541,6 +685,15 @@
 			buildConfigurations = (
 				000000000000000000000915 /* Debug */,
 				000000000000000000000916 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		000000000000000000000903 /* Build configuration list for PBXNativeTarget "WristAssist Watch Complication Extension" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				000000000000000000000917 /* Debug */,
+				000000000000000000000918 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
