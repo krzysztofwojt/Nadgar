@@ -62,6 +62,7 @@ final class WatchVoiceViewModel: ObservableObject {
     private struct TranscribingPlaceholderReservation {
         var id: UUID
         var previousMessage: ChatMessage?
+        var previousIndex: Int?
     }
 
     init(
@@ -538,7 +539,8 @@ final class WatchVoiceViewModel: ObservableObject {
             messages = updatedMessages
             return TranscribingPlaceholderReservation(
                 id: previousMessage.id,
-                previousMessage: previousMessage
+                previousMessage: previousMessage,
+                previousIndex: reusableIndex
             )
         }
 
@@ -548,7 +550,7 @@ final class WatchVoiceViewModel: ObservableObject {
             isPlaceholder: true
         )
         messages.append(message)
-        return TranscribingPlaceholderReservation(id: message.id, previousMessage: nil)
+        return TranscribingPlaceholderReservation(id: message.id, previousMessage: nil, previousIndex: nil)
     }
 
     private func reusableTranscribingPlaceholderIndex() -> Int? {
@@ -569,9 +571,11 @@ final class WatchVoiceViewModel: ObservableObject {
 
     private func cancelTranscribingPlaceholder(_ reservation: TranscribingPlaceholderReservation) {
         if let previousMessage = reservation.previousMessage {
-            updateMessage(id: reservation.id) { message in
-                message = previousMessage
-            }
+            var updatedMessages = messages
+            updatedMessages.removeAll { $0.id == reservation.id }
+            let insertionIndex = min(reservation.previousIndex ?? updatedMessages.count, updatedMessages.count)
+            updatedMessages.insert(previousMessage, at: insertionIndex)
+            messages = updatedMessages
         } else {
             removeMessage(id: reservation.id)
         }
