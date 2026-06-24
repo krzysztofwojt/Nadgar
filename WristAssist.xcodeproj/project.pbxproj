@@ -24,6 +24,8 @@
 		000000000000000000000118 /* WatchPTTRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000218 /* WatchPTTRecorder.swift */; };
 		000000000000000000000119 /* OpenAITranscriptionClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000219 /* OpenAITranscriptionClient.swift */; };
 		000000000000000000000120 /* OpenAIResponsesClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000220 /* OpenAIResponsesClient.swift */; };
+		000000000000000000000121 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000221 /* Assets.xcassets */; };
+		000000000000000000000122 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000222 /* Assets.xcassets */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -67,6 +69,8 @@
 		000000000000000000000218 /* WatchPTTRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchPTTRecorder.swift; sourceTree = "<group>"; };
 		000000000000000000000219 /* OpenAITranscriptionClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenAITranscriptionClient.swift; sourceTree = "<group>"; };
 		000000000000000000000220 /* OpenAIResponsesClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenAIResponsesClient.swift; sourceTree = "<group>"; };
+		000000000000000000000221 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		000000000000000000000222 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		000000000000000000000301 /* WristAssist.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = WristAssist.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		000000000000000000000302 /* WristAssist Watch App.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "WristAssist Watch App.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		000000000000000000000303 /* Package.swift */ = {isa = PBXFileReference; lastKnownFileType = text; path = Package.swift; sourceTree = "<group>"; };
@@ -129,6 +133,7 @@
 				000000000000000000000205 /* OpenAIAPIKeyValidationService.swift */,
 				000000000000000000000207 /* PhoneConnectivityController.swift */,
 				000000000000000000000208 /* Info.plist */,
+				000000000000000000000221 /* Assets.xcassets */,
 			);
 			path = iOS;
 			sourceTree = "<group>";
@@ -145,6 +150,7 @@
 				000000000000000000000219 /* OpenAITranscriptionClient.swift */,
 				000000000000000000000220 /* OpenAIResponsesClient.swift */,
 				000000000000000000000217 /* Info.plist */,
+				000000000000000000000222 /* Assets.xcassets */,
 			);
 			path = Watch;
 			sourceTree = "<group>";
@@ -239,6 +245,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				000000000000000000000121 /* Assets.xcassets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -246,6 +253,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				000000000000000000000122 /* Assets.xcassets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -408,6 +416,7 @@
 		000000000000000000000913 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = DVXV85L4UG;
@@ -433,6 +442,7 @@
 		000000000000000000000914 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = DVXV85L4UG;
@@ -458,6 +468,7 @@
 		000000000000000000000915 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = DVXV85L4UG;
@@ -482,6 +493,7 @@
 		000000000000000000000916 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = DVXV85L4UG;
