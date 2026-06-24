@@ -530,9 +530,11 @@ final class WatchVoiceViewModel: ObservableObject {
         if let reusableIndex = reusableTranscribingPlaceholderIndex() {
             let previousMessage = messages[reusableIndex]
             var updatedMessages = messages
-            updatedMessages[reusableIndex].text = Self.transcriptionPlaceholderText
-            updatedMessages[reusableIndex].createdAt = Date()
-            updatedMessages[reusableIndex].isPlaceholder = true
+            var reusedMessage = updatedMessages.remove(at: reusableIndex)
+            reusedMessage.text = Self.transcriptionPlaceholderText
+            reusedMessage.createdAt = Date()
+            reusedMessage.isPlaceholder = true
+            updatedMessages.append(reusedMessage)
             messages = updatedMessages
             return TranscribingPlaceholderReservation(
                 id: previousMessage.id,
