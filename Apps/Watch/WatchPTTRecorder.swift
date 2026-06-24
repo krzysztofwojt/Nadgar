@@ -8,6 +8,7 @@ struct WatchRecordedAudioFile: Sendable {
     var durationMilliseconds: Int
 }
 
+@MainActor
 final class WatchPTTRecorder {
     private static let temporaryFilePrefix = "wristassist-ptt-"
     private static let logger = Logger(

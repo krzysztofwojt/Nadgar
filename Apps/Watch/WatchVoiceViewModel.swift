@@ -57,7 +57,7 @@ final class WatchVoiceViewModel: ObservableObject {
     init(
         connectivity: WatchConnectivityClient = WatchConnectivityClient(),
         configurationStore: WatchConfigurationStore = WatchConfigurationStore(),
-        recorder: WatchPTTRecorder = WatchPTTRecorder(),
+        recorder: WatchPTTRecorder? = nil,
         transcriptionClient: OpenAITranscriptionClient = OpenAITranscriptionClient(),
         responsesClient: OpenAIResponsesClient = OpenAIResponsesClient(),
         openAITestMode: WatchOpenAITestMode = .current
@@ -66,7 +66,7 @@ final class WatchVoiceViewModel: ObservableObject {
 
         self.connectivity = connectivity
         self.configurationStore = configurationStore
-        self.recorder = recorder
+        self.recorder = recorder ?? WatchPTTRecorder()
         self.transcriptionClient = transcriptionClient
         self.responsesClient = responsesClient
         self.openAITestMode = openAITestMode
@@ -75,7 +75,7 @@ final class WatchVoiceViewModel: ObservableObject {
         self.apiKey = openAITestMode.apiKeyOverride ?? (try? configurationStore.loadAPIKey())
         self.messages = []
 
-        recorder.cleanupTemporaryFiles()
+        self.recorder.cleanupTemporaryFiles()
 
         connectivity.onConfigurationChanged = { [weak self] configuration in
             Task { @MainActor in
