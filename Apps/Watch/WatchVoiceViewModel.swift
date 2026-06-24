@@ -57,6 +57,13 @@ final class WatchVoiceViewModel: ObservableObject {
     private var shouldCancelPushToTalkAfterStart = false
     private var activeRecordingStartID: UUID?
     private var activeTurnID = UUID()
+    private var remainingMockTranscriptionFailures = 0
+
+    private struct TranscribingPlaceholderReservation {
+        var id: UUID
+        var previousMessage: ChatMessage?
+        var previousIndex: Int?
+    }
 
     init(
         connectivity: WatchConnectivityClient = WatchConnectivityClient(),
@@ -74,6 +81,7 @@ final class WatchVoiceViewModel: ObservableObject {
         self.transcriptionClient = transcriptionClient
         self.responsesClient = responsesClient
         self.openAITestMode = openAITestMode
+        self.remainingMockTranscriptionFailures = openAITestMode.transcriptionFailuresBeforeSuccess
         self.pttState = .ready
         self.settings = localConfiguration.settings
         self.apiKey = openAITestMode.apiKeyOverride ?? (try? configurationStore.loadAPIKey())
@@ -321,7 +329,7 @@ final class WatchVoiceViewModel: ObservableObject {
         let turnID = UUID()
         activeTurnID = turnID
         pttState = .transcribing
-        let userPlaceholderID = appendTranscribingPlaceholder()
+        let userPlaceholder = reserveTranscribingPlaceholder()
         Self.logger.info("ptt recording finishing")
 
         var recordedFile: WatchRecordedAudioFile?
@@ -336,7 +344,7 @@ final class WatchVoiceViewModel: ObservableObject {
             await prewarmRecorderIfPossible()
 
             guard file.durationMilliseconds >= Self.minimumRecordingMilliseconds else {
-                removeMessage(id: userPlaceholderID)
+                cancelTranscribingPlaceholder(userPlaceholder)
                 pttState = .ready
                 errorMessage = nil
                 Self.logger.info("ptt recording ignored reason=too_short durationMs=\(file.durationMilliseconds, privacy: .public)")
@@ -346,7 +354,7 @@ final class WatchVoiceViewModel: ObservableObject {
             let transcript = try await transcribe(file: file, apiKey: apiKey)
             guard activeTurnID == turnID else { return }
 
-            updateTranscribingPlaceholder(id: userPlaceholderID, transcript: transcript)
+            updateTranscribingPlaceholder(id: userPlaceholder.id, transcript: transcript)
             pttState = .thinking
             assistantPlaceholderID = appendAssistantPlaceholder()
             Self.logger.info("ptt transcript appended characters=\(transcript.count, privacy: .public)")
@@ -361,7 +369,7 @@ final class WatchVoiceViewModel: ObservableObject {
         } catch {
             guard activeTurnID == turnID else { return }
             let failureDescription = error.localizedDescription
-            failTranscribingPlaceholder(id: userPlaceholderID, errorDescription: failureDescription)
+            failTranscribingPlaceholder(id: userPlaceholder.id, errorDescription: failureDescription)
             failAssistantPlaceholder(id: assistantPlaceholderID, errorDescription: failureDescription)
             pttState = .failed
             errorMessage = failureDescription
@@ -494,6 +502,12 @@ final class WatchVoiceViewModel: ObservableObject {
     private func transcribe(file: WatchRecordedAudioFile, apiKey: String) async throws -> String {
         if openAITestMode.isEnabled {
             await openAITestMode.simulateTranscriptionDelay()
+
+            if remainingMockTranscriptionFailures > 0 {
+                remainingMockTranscriptionFailures -= 1
+                throw WatchOpenAITestModeError.transcriptionFailed
+            }
+
             return openAITestMode.transcript(durationMilliseconds: file.durationMilliseconds)
         }
 
@@ -513,14 +527,58 @@ final class WatchVoiceViewModel: ObservableObject {
         )
     }
 
-    private func appendTranscribingPlaceholder() -> UUID {
+    private func reserveTranscribingPlaceholder() -> TranscribingPlaceholderReservation {
+        if let reusableIndex = reusableTranscribingPlaceholderIndex() {
+            let previousMessage = messages[reusableIndex]
+            var updatedMessages = messages
+            var reusedMessage = updatedMessages.remove(at: reusableIndex)
+            reusedMessage.text = Self.transcriptionPlaceholderText
+            reusedMessage.createdAt = Date()
+            reusedMessage.isPlaceholder = true
+            updatedMessages.append(reusedMessage)
+            messages = updatedMessages
+            return TranscribingPlaceholderReservation(
+                id: previousMessage.id,
+                previousMessage: previousMessage,
+                previousIndex: reusableIndex
+            )
+        }
+
         let message = ChatMessage(
             role: .user,
             text: Self.transcriptionPlaceholderText,
             isPlaceholder: true
         )
         messages.append(message)
-        return message.id
+        return TranscribingPlaceholderReservation(id: message.id, previousMessage: nil, previousIndex: nil)
+    }
+
+    private func reusableTranscribingPlaceholderIndex() -> Int? {
+        messages.indices.reversed().first { index in
+            let message = messages[index]
+
+            return message.role == .user &&
+                message.isPlaceholder &&
+                isTranscribingPlaceholderText(message.text)
+        }
+    }
+
+    private func isTranscribingPlaceholderText(_ text: String) -> Bool {
+        text == Self.transcriptionPlaceholderText ||
+            text == Self.transcriptionFailedPlaceholderText ||
+            text.hasPrefix("\(Self.transcriptionFailedPlaceholderText):")
+    }
+
+    private func cancelTranscribingPlaceholder(_ reservation: TranscribingPlaceholderReservation) {
+        if let previousMessage = reservation.previousMessage {
+            var updatedMessages = messages
+            updatedMessages.removeAll { $0.id == reservation.id }
+            let insertionIndex = min(reservation.previousIndex ?? updatedMessages.count, updatedMessages.count)
+            updatedMessages.insert(previousMessage, at: insertionIndex)
+            messages = updatedMessages
+        } else {
+            removeMessage(id: reservation.id)
+        }
     }
 
     private func appendRecordingStartFailure(_ errorDescription: String) {
@@ -632,6 +690,7 @@ final class WatchVoiceViewModel: ObservableObject {
 
 struct WatchOpenAITestMode: Equatable {
     var isEnabled: Bool
+    var transcriptionFailuresBeforeSuccess: Int = 0
 
     var apiKeyOverride: String? {
         isEnabled ? "__wristassist_mock_openai__" : nil
@@ -647,8 +706,20 @@ struct WatchOpenAITestMode: Equatable {
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
         let isEnvironmentEnabled = ["1", "true", "yes", "on"].contains(environmentValue ?? "")
+        let transcriptionFailuresBeforeSuccess = max(
+            0,
+            integerArgument(named: "-WristAssistMockTranscriptionFailures", in: processInfo.arguments) ??
+                integerEnvironmentValue(
+                    named: "WRISTASSIST_MOCK_TRANSCRIPTION_FAILURES",
+                    in: processInfo.environment
+                ) ??
+                0
+        )
 
-        return WatchOpenAITestMode(isEnabled: isLaunchArgumentEnabled || isEnvironmentEnabled)
+        return WatchOpenAITestMode(
+            isEnabled: isLaunchArgumentEnabled || isEnvironmentEnabled || transcriptionFailuresBeforeSuccess > 0,
+            transcriptionFailuresBeforeSuccess: transcriptionFailuresBeforeSuccess
+        )
         #else
         return .disabled
         #endif
@@ -669,6 +740,42 @@ struct WatchOpenAITestMode: Equatable {
 
     func assistantText(turnNumber: Int) -> String {
         "Mock response \(turnNumber): PTT recording, transcription, and chat rendering completed without OpenAI."
+    }
+
+    private static func integerArgument(named name: String, in arguments: [String]) -> Int? {
+        for (index, argument) in arguments.enumerated() {
+            if argument == name,
+               arguments.indices.contains(index + 1)
+            {
+                return Int(arguments[index + 1])
+            }
+
+            let prefix = "\(name)="
+            if argument.hasPrefix(prefix) {
+                return Int(argument.dropFirst(prefix.count))
+            }
+        }
+
+        return nil
+    }
+
+    private static func integerEnvironmentValue(named name: String, in environment: [String: String]) -> Int? {
+        guard let value = environment[name]?.trimmingCharacters(in: .whitespacesAndNewlines) else {
+            return nil
+        }
+
+        return Int(value)
+    }
+}
+
+enum WatchOpenAITestModeError: LocalizedError {
+    case transcriptionFailed
+
+    var errorDescription: String? {
+        switch self {
+        case .transcriptionFailed:
+            return "Mock transcription failed."
+        }
     }
 }
 
