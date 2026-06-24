@@ -16,7 +16,9 @@ public struct OpenAIResponsesRequest: Encodable, Equatable, Sendable {
         self.instructions = instructions?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
         self.reasoning = OpenAIReasoningOptions(effort: "low")
         self.text = OpenAITextOptions(verbosity: "low")
-        self.input = messages.map(OpenAIResponsesInputMessage.init(message:))
+        self.input = messages
+            .filter { !$0.isPlaceholder }
+            .map(OpenAIResponsesInputMessage.init(message:))
     }
 }
 

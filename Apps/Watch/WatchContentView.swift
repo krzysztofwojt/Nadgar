@@ -92,11 +92,7 @@ struct WatchContentView: View {
                 Spacer(minLength: 24)
             }
 
-            Text(message.text)
-                .font(.system(size: 13, weight: .medium))
-                .lineSpacing(1)
-                .foregroundStyle(.white)
-                .multilineTextAlignment(.leading)
+            messageText(message)
                 .padding(.horizontal, 9)
                 .padding(.vertical, 7)
                 .frame(maxWidth: 170, alignment: .leading)
@@ -108,6 +104,24 @@ struct WatchContentView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: message.role == .user ? .trailing : .leading)
+    }
+
+    @ViewBuilder
+    private func messageText(_ message: ChatMessage) -> some View {
+        if message.isPlaceholder {
+            Text(message.text)
+                .font(.system(size: 13, weight: .regular))
+                .italic()
+                .lineSpacing(1)
+                .foregroundStyle(.white.opacity(0.76))
+                .multilineTextAlignment(.leading)
+        } else {
+            Text(message.text)
+                .font(.system(size: 13, weight: .medium))
+                .lineSpacing(1)
+                .foregroundStyle(.white)
+                .multilineTextAlignment(.leading)
+        }
     }
 
     private var topReadableGradient: some View {
@@ -125,8 +139,16 @@ struct WatchContentView: View {
     }
 
     private var pushToTalkMicrophoneButton: some View {
-        Image(systemName: "mic.fill")
-            .font(.system(size: 22, weight: .semibold))
+        ZStack {
+            if viewModel.isProcessing {
+                ProcessingDotsIcon()
+                    .transition(.opacity.combined(with: .scale(scale: 0.86)))
+            } else {
+                Image(systemName: "mic.fill")
+                    .font(.system(size: 22, weight: .semibold))
+                    .transition(.opacity.combined(with: .scale(scale: 0.86)))
+            }
+        }
             .frame(width: 66, height: 44)
             .foregroundStyle(.white)
             .pttGlassButton(tint: microphoneButtonTint, isInteractive: viewModel.hasAPIKey && !viewModel.isProcessing)
@@ -147,7 +169,7 @@ struct WatchContentView: View {
                     }
             )
             .allowsHitTesting(viewModel.hasAPIKey && !viewModel.isProcessing)
-            .accessibilityLabel("Microphone")
+            .accessibilityLabel(viewModel.isProcessing ? "Processing" : "Microphone")
             .accessibilityAddTraits(.isButton)
     }
 
@@ -167,6 +189,31 @@ struct WatchContentView: View {
         withAnimation(.easeOut(duration: 0.18)) {
             proxy.scrollTo(bottomID, anchor: .bottom)
         }
+    }
+}
+
+private struct ProcessingDotsIcon: View {
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
+            HStack(spacing: 4) {
+                ForEach(0..<3, id: \.self) { index in
+                    let wave = dotWave(at: timeline.date, index: index)
+
+                    Circle()
+                        .fill(.white)
+                        .frame(width: 6, height: 6)
+                        .opacity(0.42 + wave * 0.58)
+                        .scaleEffect(0.72 + wave * 0.32)
+                }
+            }
+        }
+        .frame(width: 32, height: 22)
+        .accessibilityHidden(true)
+    }
+
+    private func dotWave(at date: Date, index: Int) -> Double {
+        let phase = date.timeIntervalSinceReferenceDate * 1.4 - Double(index) * 0.18
+        return (sin(phase * .pi * 2) + 1) / 2
     }
 }
 

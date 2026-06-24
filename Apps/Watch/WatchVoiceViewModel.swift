@@ -6,6 +6,10 @@ import WristAssistShared
 @MainActor
 final class WatchVoiceViewModel: ObservableObject {
     private static let minimumRecordingMilliseconds = 250
+    private static let transcriptionPlaceholderText = "Transcribing..."
+    private static let transcriptionFailedPlaceholderText = "Transcription failed"
+    private static let assistantPlaceholderText = "Writing..."
+    private static let assistantFailedPlaceholderText = "Response failed"
     private static let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "com.kwojt.WristAssist.watchkitapp",
         category: "WatchVoiceViewModel"
@@ -201,9 +205,11 @@ final class WatchVoiceViewModel: ObservableObject {
         let turnID = UUID()
         activeTurnID = turnID
         pttState = .transcribing
+        let userPlaceholderID = appendTranscribingPlaceholder()
         Self.logger.info("ptt recording finishing")
 
         var recordedFile: WatchRecordedAudioFile?
+        var assistantPlaceholderID: UUID?
         defer {
             recorder.deleteTemporaryFile(at: recordedFile?.url)
         }
@@ -214,6 +220,7 @@ final class WatchVoiceViewModel: ObservableObject {
             await prewarmRecorderIfPossible()
 
             guard file.durationMilliseconds >= Self.minimumRecordingMilliseconds else {
+                removeMessage(id: userPlaceholderID)
                 pttState = .ready
                 errorMessage = nil
                 Self.logger.info("ptt recording ignored reason=too_short durationMs=\(file.durationMilliseconds, privacy: .public)")
@@ -223,20 +230,22 @@ final class WatchVoiceViewModel: ObservableObject {
             let transcript = try await transcribe(file: file, apiKey: apiKey)
             guard activeTurnID == turnID else { return }
 
-            let userMessage = ChatMessage(role: .user, text: transcript)
-            messages.append(userMessage)
+            updateTranscribingPlaceholder(id: userPlaceholderID, transcript: transcript)
             pttState = .thinking
+            assistantPlaceholderID = appendAssistantPlaceholder()
             Self.logger.info("ptt transcript appended characters=\(transcript.count, privacy: .public)")
 
             let assistantText = try await assistantResponse(apiKey: apiKey, messages: messages)
             guard activeTurnID == turnID else { return }
 
-            messages.append(ChatMessage(role: .assistant, text: assistantText))
+            updateAssistantPlaceholder(id: assistantPlaceholderID, response: assistantText)
             pttState = .ready
             errorMessage = nil
             Self.logger.info("ptt assistant response appended characters=\(assistantText.count, privacy: .public)")
         } catch {
             guard activeTurnID == turnID else { return }
+            failTranscribingPlaceholder(id: userPlaceholderID)
+            failAssistantPlaceholder(id: assistantPlaceholderID)
             pttState = .failed
             errorMessage = error.localizedDescription
             recorder.cancel()
@@ -357,7 +366,7 @@ final class WatchVoiceViewModel: ObservableObject {
     private func assistantResponse(apiKey: String, messages: [ChatMessage]) async throws -> String {
         if openAITestMode.isEnabled {
             await openAITestMode.simulateResponseDelay()
-            return openAITestMode.assistantText(turnNumber: messages.filter { $0.role == .user }.count)
+            return openAITestMode.assistantText(turnNumber: messages.filter { $0.role == .user && !$0.isPlaceholder }.count)
         }
 
         return try await responsesClient.responseText(
@@ -365,6 +374,86 @@ final class WatchVoiceViewModel: ObservableObject {
             settings: settings,
             messages: messages
         )
+    }
+
+    private func appendTranscribingPlaceholder() -> UUID {
+        let message = ChatMessage(
+            role: .user,
+            text: Self.transcriptionPlaceholderText,
+            isPlaceholder: true
+        )
+        messages.append(message)
+        return message.id
+    }
+
+    private func updateTranscribingPlaceholder(id: UUID, transcript: String) {
+        updateMessage(id: id) { message in
+            message.text = transcript
+            message.isPlaceholder = false
+        } fallback: {
+            self.messages.append(ChatMessage(id: id, role: .user, text: transcript))
+        }
+    }
+
+    private func failTranscribingPlaceholder(id: UUID) {
+        updateMessage(id: id) { message in
+            guard message.isPlaceholder else { return }
+
+            message.text = Self.transcriptionFailedPlaceholderText
+            message.isPlaceholder = true
+        }
+    }
+
+    private func appendAssistantPlaceholder() -> UUID {
+        let message = ChatMessage(
+            role: .assistant,
+            text: Self.assistantPlaceholderText,
+            isPlaceholder: true
+        )
+        messages.append(message)
+        return message.id
+    }
+
+    private func updateAssistantPlaceholder(id: UUID?, response: String) {
+        guard let id else {
+            messages.append(ChatMessage(role: .assistant, text: response))
+            return
+        }
+
+        updateMessage(id: id) { message in
+            message.text = response
+            message.isPlaceholder = false
+        } fallback: {
+            self.messages.append(ChatMessage(role: .assistant, text: response))
+        }
+    }
+
+    private func failAssistantPlaceholder(id: UUID?) {
+        guard let id else { return }
+
+        updateMessage(id: id) { message in
+            message.text = Self.assistantFailedPlaceholderText
+            message.isPlaceholder = true
+        }
+    }
+
+    private func removeMessage(id: UUID) {
+        messages.removeAll { $0.id == id }
+    }
+
+    private func updateMessage(
+        id: UUID,
+        update: (inout ChatMessage) -> Void,
+        fallback: (() -> Void)? = nil
+    ) {
+        guard let index = messages.firstIndex(where: { $0.id == id }) else {
+            fallback?()
+            return
+        }
+
+        var updatedMessages = messages
+        update(&updatedMessages[index])
+        messages = updatedMessages
     }
 
     private var normalizedAPIKey: String? {

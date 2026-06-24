@@ -60,4 +60,41 @@ struct OpenAIStandaloneModelsTests {
 
         #expect(decoded.assistantText == "Pierwsza linia.\nDruga linia.")
     }
+
+    @Test func responsesRequestExcludesPlaceholderMessages() throws {
+        let messages = [
+            ChatMessage(
+                id: UUID(),
+                role: .user,
+                text: "Transcribing...",
+                createdAt: Date(timeIntervalSince1970: 1),
+                isPlaceholder: true
+            ),
+            ChatMessage(
+                id: UUID(),
+                role: .user,
+                text: "Real transcript.",
+                createdAt: Date(timeIntervalSince1970: 2)
+            ),
+            ChatMessage(
+                id: UUID(),
+                role: .assistant,
+                text: "Writing...",
+                createdAt: Date(timeIntervalSince1970: 3),
+                isPlaceholder: true
+            )
+        ]
+        let request = OpenAIResponsesRequest(
+            instructions: nil,
+            messages: messages
+        )
+
+        let data = try JSONEncoder().encode(request)
+        let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let input = try #require(object["input"] as? [[String: Any]])
+
+        #expect(input.count == 1)
+        #expect(input[0]["role"] as? String == "user")
+        #expect(input[0]["content"] as? String == "Real transcript.")
+    }
 }
