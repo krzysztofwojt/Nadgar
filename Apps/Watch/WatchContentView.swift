@@ -15,8 +15,9 @@ struct WatchContentView: View {
     private let microphoneHomeTrailing: CGFloat = 10
     private let microphoneHomeBottom: CGFloat = 16
     private let dragTargetSize = CGSize(width: 66, height: 44)
+    private let dragTargetGlowSize = CGSize(width: 118, height: 118)
     private let dragTargetEdgeInset: CGFloat = 8
-    private let cancelTargetLeadingInset: CGFloat = 16
+    private let cancelTargetLeadingInset: CGFloat = 6
     private let lockTargetTopInset: CGFloat = 20
     private let dragTargetHitPadding: CGFloat = 24
     private let lockedDragActivationThreshold: CGFloat = 8
@@ -225,12 +226,12 @@ struct WatchContentView: View {
 
         return ZStack {
             dragTargetPad(.cancel, isActive: activeDragTarget == .cancel)
-                .frame(width: dragTargetSize.width, height: dragTargetSize.height)
+                .frame(width: dragTargetGlowSize.width, height: dragTargetGlowSize.height)
                 .position(x: cancelFrame.midX, y: cancelFrame.midY)
 
             if !viewModel.isRecordingLocked {
                 dragTargetPad(.lock, isActive: activeDragTarget == .lock)
-                    .frame(width: dragTargetSize.width, height: dragTargetSize.height)
+                    .frame(width: dragTargetGlowSize.width, height: dragTargetGlowSize.height)
                     .position(x: lockFrame.midX, y: lockFrame.midY)
             }
         }
@@ -241,15 +242,28 @@ struct WatchContentView: View {
     }
 
     private func dragTargetPad(_ target: PTTDragTarget, isActive: Bool) -> some View {
-        Image(systemName: target.symbolName)
-            .font(.system(size: 22, weight: .semibold))
-            .foregroundStyle(.white)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .pttTargetGlassPad(tint: target.tint, isActive: isActive)
-            .brightness(isActive ? 0.05 : 0)
-            .scaleEffect(isActive ? 1.24 : 1)
-            .shadow(color: target.tint.opacity(isActive ? 0.72 : 0.25), radius: isActive ? 22 : 10, x: 0, y: 0)
-            .shadow(color: target.tint.opacity(isActive ? 0.34 : 0), radius: isActive ? 36 : 0, x: 0, y: 0)
+        ZStack {
+            RadialGradient(
+                colors: [
+                    target.tint.opacity(isActive ? 0.82 : 0.54),
+                    target.tint.opacity(isActive ? 0.45 : 0.28),
+                    target.tint.opacity(isActive ? 0.16 : 0.1),
+                    target.tint.opacity(0)
+                ],
+                center: .center,
+                startRadius: isActive ? 2 : 4,
+                endRadius: isActive ? 66 : 54
+            )
+            .scaleEffect(isActive ? 1.18 : 1)
+            .blur(radius: isActive ? 2 : 3)
+
+            Image(systemName: target.symbolName)
+                .font(.system(size: isActive ? 29 : 24, weight: .semibold))
+                .foregroundStyle(.white)
+                .shadow(color: .black.opacity(0.32), radius: 3, x: 0, y: 1)
+                .shadow(color: target.tint.opacity(isActive ? 0.75 : 0.38), radius: isActive ? 14 : 8, x: 0, y: 0)
+        }
+            .brightness(isActive ? 0.06 : 0)
             .animation(.spring(response: 0.18, dampingFraction: 0.66), value: isActive)
             .accessibilityHidden(true)
     }
@@ -464,16 +478,24 @@ struct WatchContentView: View {
     private func dragTargetFrame(_ target: PTTDragTarget, in size: CGSize) -> CGRect {
         switch target {
         case .lock:
+            let centerX = microphoneHomePosition(in: size).x
             return CGRect(
-                x: max(dragTargetEdgeInset, size.width - dragTargetSize.width - dragTargetEdgeInset),
+                x: min(
+                    max(dragTargetEdgeInset, centerX - dragTargetSize.width / 2),
+                    size.width - dragTargetSize.width - dragTargetEdgeInset
+                ),
                 y: lockTargetTopInset,
                 width: dragTargetSize.width,
                 height: dragTargetSize.height
             )
         case .cancel:
+            let centerY = microphoneHomePosition(in: size).y
             return CGRect(
                 x: cancelTargetLeadingInset,
-                y: max(dragTargetEdgeInset, size.height - dragTargetSize.height - dragTargetEdgeInset),
+                y: min(
+                    max(dragTargetEdgeInset, centerY - dragTargetSize.height / 2),
+                    size.height - dragTargetSize.height - dragTargetEdgeInset
+                ),
                 width: dragTargetSize.width,
                 height: dragTargetSize.height
             )
@@ -587,40 +609,6 @@ private extension View {
                 .overlay {
                     Capsule(style: .continuous)
                         .stroke(.white.opacity(0.46), lineWidth: 0.8)
-                }
-        }
-    }
-
-    @ViewBuilder
-    func pttTargetGlassPad(tint: Color, isActive: Bool) -> some View {
-        if #available(watchOS 26.0, *) {
-            self
-                .background {
-                    ZStack {
-                        Capsule(style: .continuous)
-                            .fill(.white.opacity(isActive ? 0.2 : 0.08))
-                        Capsule(style: .continuous)
-                            .fill(tint.opacity(isActive ? 0.22 : 0.05))
-                    }
-                }
-                .glassEffect(
-                    .regular.tint(tint.opacity(isActive ? 0.6 : 0.28)).interactive(false),
-                    in: Capsule(style: .continuous)
-                )
-                .overlay {
-                    Capsule(style: .continuous)
-                        .stroke(.white.opacity(isActive ? 0.86 : 0.48), lineWidth: isActive ? 1.1 : 0.8)
-                }
-        } else {
-            self
-                .background(.ultraThinMaterial, in: Capsule(style: .continuous))
-                .overlay {
-                    Capsule(style: .continuous)
-                        .fill(tint.opacity(isActive ? 0.32 : 0.12))
-                }
-                .overlay {
-                    Capsule(style: .continuous)
-                        .stroke(.white.opacity(isActive ? 0.72 : 0.38), lineWidth: isActive ? 1.1 : 0.8)
                 }
         }
     }
