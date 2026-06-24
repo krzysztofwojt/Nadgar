@@ -190,12 +190,14 @@ struct OpenAIStandaloneModelsTests {
         #expect(response.text.contains("---"))
         #expect(response.text.contains("| Format | Status | Source | Notes |"))
         #expect(response.text.contains("| Link | Hidden URL | [OpenAI](https://openai.com/news) | Scroll sideways"))
-        #expect(response.citations.count == 2)
+        #expect(response.text.contains("duplicate source appears before the cited duplicate source"))
+        #expect(response.citations.count == 3)
 
         let citedText = try response.citations.map { try substring(in: response.text, citation: $0) }
         #expect(citedText == [
             "latest OpenAI product news",
-            "Warsaw weather alerts for Thursday"
+            "Warsaw weather alerts for Thursday",
+            "duplicate source"
         ])
     }
 

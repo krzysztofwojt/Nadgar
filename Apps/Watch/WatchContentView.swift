@@ -814,11 +814,17 @@ struct WatchContentView: View {
             return nil
         }
 
-        let searchOffset = min(max(0, minimumVisibleOffset), visibleText.count)
-        let searchStart = visibleText.index(visibleText.startIndex, offsetBy: searchOffset)
-        let preferredSearchRange = searchStart..<visibleText.endIndex
-        guard let range = visibleText.range(of: visibleCitationText, range: preferredSearchRange) ??
-            visibleText.range(of: visibleCitationText)
+        let preferredVisibleOffset = visibleOffset(
+            forSourceOffset: citation.startIndex,
+            sourceText: sourceText
+        ) ?? minimumVisibleOffset
+
+        guard let range = bestVisibleRange(
+            matching: visibleCitationText,
+            in: visibleText,
+            preferredOffset: preferredVisibleOffset,
+            minimumOffset: minimumVisibleOffset
+        )
         else {
             return nil
         }
@@ -828,6 +834,47 @@ struct WatchContentView: View {
             lowerOffset: visibleText.distance(from: visibleText.startIndex, to: range.lowerBound),
             upperOffset: visibleText.distance(from: visibleText.startIndex, to: range.upperBound)
         )
+    }
+
+    private func visibleOffset(forSourceOffset sourceOffset: Int, sourceText: String) -> Int? {
+        guard sourceOffset >= 0,
+              sourceOffset <= sourceText.count
+        else {
+            return nil
+        }
+
+        let prefixEnd = sourceText.index(sourceText.startIndex, offsetBy: sourceOffset)
+        let displayPrefix = watchDisplayMarkdown(from: String(sourceText[..<prefixEnd]))
+        return markdownAttributedString(from: displayPrefix).characters.count
+    }
+
+    private func bestVisibleRange(
+        matching text: String,
+        in visibleText: String,
+        preferredOffset: Int,
+        minimumOffset: Int
+    ) -> Range<String.Index>? {
+        var matches: [(range: Range<String.Index>, lowerOffset: Int)] = []
+        var searchStart = visibleText.startIndex
+
+        while searchStart < visibleText.endIndex,
+              let range = visibleText.range(of: text, range: searchStart..<visibleText.endIndex) {
+            let lowerOffset = visibleText.distance(from: visibleText.startIndex, to: range.lowerBound)
+            matches.append((range, lowerOffset))
+            searchStart = range.upperBound
+        }
+
+        let eligibleMatches = matches.filter { $0.lowerOffset >= minimumOffset }
+        let candidates = eligibleMatches.isEmpty ? matches : eligibleMatches
+        return candidates.min { lhs, rhs in
+            let lhsDistance = abs(lhs.lowerOffset - preferredOffset)
+            let rhsDistance = abs(rhs.lowerOffset - preferredOffset)
+            guard lhsDistance != rhsDistance else {
+                return lhs.lowerOffset < rhs.lowerOffset
+            }
+
+            return lhsDistance < rhsDistance
+        }?.range
     }
 
     private func offsetCitationRange(

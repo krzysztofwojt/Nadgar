@@ -170,6 +170,7 @@ public enum OpenAIMockResponses {
     public static func richMarkdownCitationResponse(turnNumber: Int) -> OpenAIAssistantResponse {
         let firstCitedFragment = "latest OpenAI product news"
         let secondCitedFragment = "Warsaw weather alerts for Thursday"
+        let repeatedCitedFragment = "duplicate source"
         let text = """
         ## Mock web answer \(turnNumber)
 
@@ -181,6 +182,7 @@ public enum OpenAIMockResponses {
         2. Image markdown should display alt text only: ![OpenAI logo](https://openai.com/favicon.ico).
         - **Markets:** a bullet with [Apple Developer watchOS docs](https://developer.apple.com/watchos/) and no raw URL.
         - _Weather:_ second citation target is \(secondCitedFragment).
+        - Repeated citation check: duplicate source appears before the cited \(repeatedCitedFragment).
         - [x] Task list checked.
         - [ ] Task list unchecked.
 
@@ -211,6 +213,13 @@ public enum OpenAIMockResponses {
                     in: text,
                     url: "https://www.weather.gov/",
                     title: "Weather Alerts"
+                ),
+                citation(
+                    for: repeatedCitedFragment,
+                    in: text,
+                    occurrence: 2,
+                    url: "https://openai.com/research/",
+                    title: "Repeated Source"
                 )
             ].compactMap { $0 },
             usedWebSearch: true
@@ -220,10 +229,24 @@ public enum OpenAIMockResponses {
     private static func citation(
         for fragment: String,
         in text: String,
+        occurrence: Int = 1,
         url: String,
         title: String
     ) -> ChatCitation? {
-        guard let range = text.range(of: fragment) else { return nil }
+        guard occurrence > 0 else { return nil }
+
+        var searchStart = text.startIndex
+        var matchedRange: Range<String.Index>?
+        for _ in 0..<occurrence {
+            guard let range = text.range(of: fragment, range: searchStart..<text.endIndex) else {
+                return nil
+            }
+
+            matchedRange = range
+            searchStart = range.upperBound
+        }
+
+        guard let range = matchedRange else { return nil }
 
         return ChatCitation(
             startIndex: text.distance(from: text.startIndex, to: range.lowerBound),
