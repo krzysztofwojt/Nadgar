@@ -10,6 +10,7 @@ final class WatchVoiceViewModel: ObservableObject {
     private static let transcriptionFailedPlaceholderText = "Transcription failed"
     private static let assistantPlaceholderText = "Writing..."
     private static let assistantFailedPlaceholderText = "Response failed"
+    private static let recordingStartFailedText = "Recording could not be started."
     private static let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "com.kwojt.WristAssist.watchkitapp",
         category: "WatchVoiceViewModel"
@@ -50,6 +51,7 @@ final class WatchVoiceViewModel: ObservableObject {
     private var isPushToTalkHoldActive = false
     private var isRecordingStartPending = false
     private var shouldFinishPushToTalkAfterStart = false
+    private var activeRecordingStartID: UUID?
     private var activeTurnID = UUID()
 
     init(
@@ -127,6 +129,7 @@ final class WatchVoiceViewModel: ObservableObject {
         }
 
         activeTurnID = UUID()
+        activeRecordingStartID = nil
         isPushToTalkHoldActive = false
         isRecordingStartPending = false
         shouldFinishPushToTalkAfterStart = false
@@ -151,11 +154,19 @@ final class WatchVoiceViewModel: ObservableObject {
         shouldFinishPushToTalkAfterStart = false
         isPushToTalkRecording = true
         pttState = .recording
+        let recordingStartID = UUID()
+        activeRecordingStartID = recordingStartID
         Self.logger.info("ptt recording requested")
 
         Task {
             do {
                 try await recorder.start()
+                guard activeRecordingStartID == recordingStartID else {
+                    Self.logger.info("ptt recording start ignored because it is stale")
+                    return
+                }
+
+                activeRecordingStartID = nil
                 isRecordingStartPending = false
                 Self.logger.info("ptt recording active")
 
@@ -164,13 +175,28 @@ final class WatchVoiceViewModel: ObservableObject {
                     await finishPushToTalkRecordingIfNeeded()
                 }
             } catch {
+                guard activeRecordingStartID == recordingStartID else {
+                    Self.logger.info("ptt recording start failure ignored because it is stale")
+                    return
+                }
+
+                activeRecordingStartID = nil
                 isRecordingStartPending = false
                 shouldFinishPushToTalkAfterStart = false
                 isPushToTalkRecording = false
                 isPushToTalkHoldActive = false
+                recorder.cancel()
+
+                if (error as? WatchPTTRecorderError) == .recordingStartCancelled {
+                    pttState = .ready
+                    errorMessage = nil
+                    Self.logger.info("ptt recording start cancelled")
+                    return
+                }
+
                 pttState = .failed
                 errorMessage = error.localizedDescription
-                recorder.cancel()
+                appendRecordingStartFailure(error.localizedDescription)
                 Self.logger.error("ptt recording start failed error=\(error.localizedDescription, privacy: .public)")
             }
         }
@@ -334,6 +360,7 @@ final class WatchVoiceViewModel: ObservableObject {
 
     private func resetSessionForCredentialChange() {
         activeTurnID = UUID()
+        activeRecordingStartID = nil
         recorder.cancel()
         recorder.cleanupTemporaryFiles()
         messages.removeAll()
@@ -384,6 +411,21 @@ final class WatchVoiceViewModel: ObservableObject {
         )
         messages.append(message)
         return message.id
+    }
+
+    private func appendRecordingStartFailure(_ errorDescription: String) {
+        let trimmedDescription = errorDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+        let text = trimmedDescription.isEmpty ? Self.recordingStartFailedText : trimmedDescription
+
+        if let lastMessage = messages.last,
+           lastMessage.role == .assistant,
+           lastMessage.isPlaceholder,
+           lastMessage.text == text
+        {
+            return
+        }
+
+        messages.append(ChatMessage(role: .assistant, text: text, isPlaceholder: true))
     }
 
     private func updateTranscribingPlaceholder(id: UUID, transcript: String) {

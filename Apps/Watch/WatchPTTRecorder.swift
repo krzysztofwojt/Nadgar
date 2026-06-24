@@ -17,17 +17,24 @@ final class WatchPTTRecorder {
 
     private var activeRecorder: AVAudioRecorder?
     private var activeRecordingURL: URL?
+    private var activeStartID: UUID?
     private var hasRecordPermission = false
     private var isAudioSessionActive = false
     private var isRecording = false
 
     func prewarm() async throws {
+        try await prewarm(startID: nil)
+    }
+
+    private func prewarm(startID: UUID?) async throws {
         guard !isRecording else { return }
         guard activeRecorder == nil else { return }
 
         guard await requestRecordPermission() else {
             throw WatchPTTRecorderError.microphoneDenied
         }
+
+        try ensureStartIsCurrent(startID)
 
         do {
             try activateAudioSessionIfNeeded()
@@ -42,7 +49,14 @@ final class WatchPTTRecorder {
     func start() async throws {
         guard !isRecording else { return }
 
-        try await prewarm()
+        let startID = UUID()
+        activeStartID = startID
+        defer {
+            clearStartIfCurrent(startID)
+        }
+
+        try await prewarm(startID: startID)
+        try ensureStartIsCurrent(startID)
 
         guard let recorder = activeRecorder else {
             throw WatchPTTRecorderError.recordingStartFailed
@@ -100,6 +114,7 @@ final class WatchPTTRecorder {
 
     func cancel() {
         let url = activeRecordingURL
+        activeStartID = nil
         if activeRecorder?.isRecording == true {
             activeRecorder?.stop()
         }
@@ -162,6 +177,19 @@ final class WatchPTTRecorder {
         }
     }
 
+    private func ensureStartIsCurrent(_ startID: UUID?) throws {
+        guard let startID else { return }
+        guard activeStartID == startID else {
+            throw WatchPTTRecorderError.recordingStartCancelled
+        }
+    }
+
+    private func clearStartIfCurrent(_ startID: UUID) {
+        if activeStartID == startID {
+            activeStartID = nil
+        }
+    }
+
     private func requestRecordPermission() async -> Bool {
         guard !hasRecordPermission else { return true }
 
@@ -201,6 +229,7 @@ final class WatchPTTRecorder {
 enum WatchPTTRecorderError: LocalizedError, Equatable {
     case microphoneDenied
     case recordingStartFailed
+    case recordingStartCancelled
     case notRecording
     case noAudioCaptured
 
@@ -210,6 +239,8 @@ enum WatchPTTRecorderError: LocalizedError, Equatable {
             return "Microphone permission is required."
         case .recordingStartFailed:
             return "Recording could not be started."
+        case .recordingStartCancelled:
+            return "Recording start was cancelled."
         case .notRecording:
             return "Recording was not active."
         case .noAudioCaptured:
