@@ -20,22 +20,19 @@ final class SettingsViewModel: ObservableObject {
     @Published private(set) var isSavingAPIKey = false
 
     private let credentialStore: any APIKeyStore
-    private let tokenService: OpenAIRealtimeTokenServing
+    private let apiKeyValidator: OpenAIAPIKeyValidating
     private let settingsStore: UserDefaults
-    private let safetyIdentifierStore: SafetyIdentifierStore
     private var connectivity: PhoneConnectivityController?
     private var savedAPIKey: String
 
     init(
         credentialStore: any APIKeyStore = KeychainCredentialStore(),
-        tokenService: OpenAIRealtimeTokenServing = OpenAIRealtimeTokenService(),
-        settingsStore: UserDefaults = .standard,
-        safetyIdentifierStore: SafetyIdentifierStore = SafetyIdentifierStore()
+        apiKeyValidator: OpenAIAPIKeyValidating = OpenAIAPIKeyValidationService(),
+        settingsStore: UserDefaults = .standard
     ) {
         self.credentialStore = credentialStore
-        self.tokenService = tokenService
+        self.apiKeyValidator = apiKeyValidator
         self.settingsStore = settingsStore
-        self.safetyIdentifierStore = safetyIdentifierStore
 
         var initialError: String?
         let storedAPIKey: String?
@@ -74,7 +71,6 @@ final class SettingsViewModel: ObservableObject {
             pendingWatchKeyDeletionProvider: { [weak self] in
                 self?.pendingWatchKeyDeletion ?? false
             },
-            tokenService: tokenService,
             statusHandler: { [weak self] status in
                 Task { @MainActor in
                     self?.watchStatus = status
@@ -116,10 +112,9 @@ final class SettingsViewModel: ObservableObject {
         }
 
         do {
-            _ = try await tokenService.createClientSecret(
+            try await apiKeyValidator.validateAPIKey(
                 apiKey: trimmed,
-                settings: currentSettings(hasAPIKey: true),
-                safetyIdentifier: safetyIdentifierStore.identifier()
+                model: ProviderSettings.defaultModel
             )
             try credentialStore.saveAPIKey(trimmed)
             savedAPIKey = trimmed

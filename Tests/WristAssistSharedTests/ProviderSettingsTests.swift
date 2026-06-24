@@ -3,7 +3,7 @@ import Testing
 @testable import WristAssistShared
 
 struct ProviderSettingsTests {
-    @Test func initializerForcesRealtimeModelAndNormalizesVoice() {
+    @Test func initializerForcesDefaultModelAndNormalizesVoice() {
         let settings = ProviderSettings(
             model: "legacy-model",
             voice: " CEDAR ",

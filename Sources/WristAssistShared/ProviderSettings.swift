@@ -50,7 +50,7 @@ public struct ProviderSettings: Codable, Equatable, Sendable {
         )
     }
 
-    public static let defaultModel = "gpt-realtime-2"
+    public static let defaultModel = StandalonePTTDefaults.assistantModel
     public static let defaultVoice = "marin"
     public static let defaultInstructions = "You are WristAssist, a concise voice assistant on Apple Watch. Answer briefly unless the user asks for detail."
 

@@ -89,9 +89,8 @@ struct WatchConnectivityMessagesTests {
         #expect(decoded == original)
     }
 
-    @Test func watchTokenRequestRoundTripsThroughDictionaryEnvelope() throws {
-        let settings = ProviderSettings(hasAPIKey: true)
-        let original = WatchToPhoneMessage.requestRealtimeToken(settings)
+    @Test func watchStateReportRoundTripsThroughDictionaryEnvelope() throws {
+        let original = WatchToPhoneMessage.reportConnectionState(.listening)
 
         let envelope = try MessageEnvelope(dictionary: original.envelope().dictionary())
         let decoded = try WatchToPhoneMessage(envelope: envelope)
@@ -99,23 +98,14 @@ struct WatchConnectivityMessagesTests {
         #expect(decoded == original)
     }
 
-    @Test func phoneTokenResponseRoundTripsThroughDictionaryEnvelope() throws {
-        let original = PhoneToWatchMessage.tokenResponse("ephemeral-token")
-
-        let envelope = try MessageEnvelope(dictionary: original.envelope().dictionary())
-        let decoded = try PhoneToWatchMessage(envelope: envelope)
-
-        #expect(decoded == original)
-    }
-
     @Test func missingPayloadThrowsTypedError() throws {
-        let envelope = MessageEnvelope(type: "tokenResponse")
+        let envelope = MessageEnvelope(type: "authUnavailable")
 
         do {
             _ = try PhoneToWatchMessage(envelope: envelope)
             Issue.record("Expected missing payload error.")
         } catch let error as MessageCodingError {
-            #expect(error == .missingPayload("tokenResponse"))
+            #expect(error == .missingPayload("authUnavailable"))
         } catch {
             Issue.record("Unexpected error: \(error)")
         }

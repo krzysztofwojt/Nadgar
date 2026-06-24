@@ -19,7 +19,7 @@ struct RealtimeClientEventTests {
         #expect(object["type"] as? String == "session.update")
 
         let session = try #require(object["session"] as? [String: Any])
-        #expect(session["model"] as? String == "gpt-realtime-2")
+        #expect(session["model"] as? String == ProviderSettings.defaultModel)
         #expect(session["type"] as? String == "realtime")
         #expect(session["output_modalities"] as? [String] == ["audio"])
 

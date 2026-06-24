@@ -27,8 +27,6 @@ final class WatchConnectivityClient: NSObject, WCSessionDelegate {
             return .default
         case .error(let message), .authUnavailable(let message):
             throw WatchConnectivityClientError.remote(message)
-        case .tokenResponse:
-            throw WatchConnectivityClientError.unexpectedReply
         }
     }
 
@@ -50,20 +48,6 @@ final class WatchConnectivityClient: NSObject, WCSessionDelegate {
             return WatchConfiguration(settings: .default, hasAPIKey: hasKey)
         case .error(let message), .authUnavailable(let message):
             throw WatchConnectivityClientError.remote(message)
-        case .tokenResponse:
-            throw WatchConnectivityClientError.unexpectedReply
-        }
-    }
-
-    func requestRealtimeToken(settings: ProviderSettings) async throws -> String {
-        let reply = try await send(.requestRealtimeToken(settings))
-        switch reply {
-        case .tokenResponse(let token):
-            return token
-        case .authUnavailable(let message), .error(let message):
-            throw WatchConnectivityClientError.remote(message)
-        case .configurationChanged, .settingsChanged, .syncAPIKey, .deleteAPIKey, .keyStatusResponse:
-            throw WatchConnectivityClientError.unexpectedReply
         }
     }
 
@@ -153,7 +137,7 @@ final class WatchConnectivityClient: NSObject, WCSessionDelegate {
             guard !hasKey else { return nil }
             let remainingKey = onDeleteAPIKey?() ?? (hasLocalAPIKey?() ?? false)
             return .keyStatusResponse(hasKey: remainingKey)
-        case .tokenResponse, .authUnavailable, .error:
+        case .authUnavailable, .error:
             return nil
         }
     }

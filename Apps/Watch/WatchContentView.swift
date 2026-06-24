@@ -2,26 +2,38 @@ import SwiftUI
 import WristAssistShared
 
 struct WatchContentView: View {
+    @Environment(\.scenePhase) private var scenePhase
     @StateObject private var viewModel = WatchVoiceViewModel()
+    private let bottomID = "chat-bottom"
+    private let chatBottomReadableInset: CGFloat = 78
+    private let chatAccentColor = Color(red: 0.07, green: 0.46, blue: 1)
 
     var body: some View {
         ZStack {
             Color.black
                 .ignoresSafeArea()
 
-            Group {
-                if !viewModel.hasAPIKey {
-                    missingAPIKeyView
-                } else if viewModel.isIdle {
-                    readyView
-                } else {
-                    activeView
-                }
+            if viewModel.hasAPIKey {
+                chatView
+                    .ignoresSafeArea(.container, edges: .bottom)
+            } else {
+                missingAPIKeyView
             }
-            .padding(.horizontal, 8)
         }
         .task {
             await viewModel.requestInitialSettings()
+        }
+        .onChange(of: scenePhase) { _, newPhase in
+            switch newPhase {
+            case .active:
+                Task {
+                    await viewModel.prepareForForeground()
+                }
+            case .inactive, .background:
+                viewModel.suspendAudioWarmup()
+            @unknown default:
+                viewModel.suspendAudioWarmup()
+            }
         }
     }
 
@@ -30,120 +42,123 @@ struct WatchContentView: View {
             .font(.footnote.weight(.semibold))
             .foregroundStyle(.white)
             .multilineTextAlignment(.center)
+            .padding(.horizontal, 10)
     }
 
-    private var readyView: some View {
-        VStack(spacing: 0) {
-            Spacer(minLength: 0)
+    private var chatView: some View {
+        ScrollViewReader { proxy in
+            ZStack(alignment: .bottomTrailing) {
+                ScrollView {
+                    LazyVStack(spacing: 8) {
+                        ForEach(viewModel.messages) { message in
+                            messageBubble(message)
+                                .id(message.id)
+                        }
 
-            VStack(spacing: 14) {
-                microphoneButton
-
-                Button("Click to start") {
-                    viewModel.startOrStop()
+                        Color.clear
+                            .frame(height: chatBottomReadableInset)
+                            .id(bottomID)
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.top, 6)
                 }
-                .buttonStyle(.plain)
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(.black)
-                .frame(minWidth: 118, minHeight: 34)
-                .background(Color.white)
-                .clipShape(Capsule())
-                .accessibilityLabel("Start conversation")
+                .scrollIndicators(.hidden)
+                .onAppear {
+                    scrollToBottom(proxy)
+                }
+                .onChange(of: viewModel.messages) { _, _ in
+                    scrollToBottom(proxy)
+                }
+                .onChange(of: viewModel.pttState) { _, _ in
+                    scrollToBottom(proxy)
+                }
+
+                topReadableGradient
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                    .allowsHitTesting(false)
+
+                pushToTalkMicrophoneButton
+                    .padding(.trailing, 18)
+                    .padding(.bottom, 4)
             }
-
-            Spacer(minLength: 54)
-
-            conversationModeSelector
-                .padding(.bottom, 4)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .ignoresSafeArea(.container, edges: .bottom)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .ignoresSafeArea(.container, edges: .bottom)
     }
 
-    @ViewBuilder private var activeView: some View {
-        if viewModel.isPushToTalkSession {
-            pushToTalkActiveView
+    private func messageBubble(_ message: ChatMessage) -> some View {
+        HStack {
+            if message.role == .user {
+                Spacer(minLength: 24)
+            }
+
+            messageText(message)
+                .padding(.horizontal, 9)
+                .padding(.vertical, 7)
+                .frame(maxWidth: 170, alignment: .leading)
+                .background(message.role == .user ? chatAccentColor : Color.white.opacity(0.14))
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+
+            if message.role == .assistant {
+                Spacer(minLength: 24)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: message.role == .user ? .trailing : .leading)
+    }
+
+    @ViewBuilder
+    private func messageText(_ message: ChatMessage) -> some View {
+        if message.isPlaceholder {
+            Text(message.text)
+                .font(.system(size: 13, weight: .regular))
+                .italic()
+                .lineSpacing(1)
+                .foregroundStyle(.white.opacity(0.76))
+                .multilineTextAlignment(.leading)
         } else {
-            autoActiveView
+            Text(message.text)
+                .font(.system(size: 13, weight: .medium))
+                .lineSpacing(1)
+                .foregroundStyle(.white)
+                .multilineTextAlignment(.leading)
         }
     }
 
-    private var autoActiveView: some View {
-        VStack(spacing: 10) {
-            microphoneButton
-
-            Text(viewModel.state.displayName)
-                .font(.headline)
-                .foregroundStyle(.white)
-                .multilineTextAlignment(.center)
-
-            if let errorMessage = viewModel.errorMessage {
-                Text(errorMessage)
-                    .font(.caption2)
-                    .foregroundStyle(.red)
-                    .lineLimit(3)
-                    .multilineTextAlignment(.center)
-            }
-        }
-    }
-
-    private var pushToTalkActiveView: some View {
-        VStack(spacing: 10) {
-            pushToTalkMicrophoneButton
-
-            Text(pushToTalkStatusText)
-                .font(.headline)
-                .foregroundStyle(.white)
-                .multilineTextAlignment(.center)
-
-            Button {
-                viewModel.startOrStop()
-            } label: {
-                Image(systemName: "stop.fill")
-                    .font(.system(size: 12, weight: .bold))
-                    .frame(width: 36, height: 28)
-                    .background(Color.red)
-                    .foregroundStyle(.white)
-                    .clipShape(Capsule())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Stop conversation")
-
-            if let errorMessage = viewModel.errorMessage {
-                Text(errorMessage)
-                    .font(.caption2)
-                    .foregroundStyle(.red)
-                    .lineLimit(3)
-                    .multilineTextAlignment(.center)
-            }
-        }
-    }
-
-    private var microphoneButton: some View {
-        Button {
-            viewModel.startOrStop()
-        } label: {
-            Image(systemName: viewModel.isRunning ? "stop.fill" : "mic.fill")
-                .font(.system(size: 30, weight: .semibold))
-                .frame(width: 76, height: 76)
-                .background(viewModel.isRunning ? Color.red : Color.green)
-                .foregroundStyle(.white)
-                .clipShape(Circle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(viewModel.isRunning ? "Stop conversation" : "Start conversation")
+    private var topReadableGradient: some View {
+        LinearGradient(
+            colors: [
+                Color.black.opacity(0.9),
+                Color.black.opacity(0.52),
+                Color.black.opacity(0)
+            ],
+            startPoint: .top,
+            endPoint: .bottom
+        )
+        .frame(height: 56)
+        .ignoresSafeArea(.container, edges: .top)
     }
 
     private var pushToTalkMicrophoneButton: some View {
-        Image(systemName: "mic.fill")
-            .font(.system(size: 30, weight: .semibold))
-            .frame(width: 76, height: 76)
-            .background(viewModel.isPushToTalkRecording ? Color.green : Color.green.opacity(0.86))
+        ZStack {
+            if viewModel.isProcessing {
+                ProcessingDotsIcon()
+                    .transition(.opacity.combined(with: .scale(scale: 0.86)))
+            } else {
+                Image(systemName: "mic.fill")
+                    .font(.system(size: 22, weight: .semibold))
+                    .transition(.opacity.combined(with: .scale(scale: 0.86)))
+            }
+        }
+            .frame(width: 66, height: 44)
             .foregroundStyle(.white)
-            .clipShape(Circle())
-            .scaleEffect(viewModel.isPushToTalkRecording ? 1.06 : 1)
+            .pttGlassButton(tint: microphoneButtonTint, isInteractive: viewModel.hasAPIKey && !viewModel.isProcessing)
+            .scaleEffect(viewModel.isPushToTalkRecording ? 1.08 : 1)
+            .shadow(color: microphoneButtonTint.opacity(0.34), radius: 18, x: 0, y: 0)
+            .shadow(color: microphoneButtonTint.opacity(0.2), radius: 7, x: 0, y: 2)
+            .shadow(color: .black.opacity(0.28), radius: 8, x: 0, y: 3)
             .animation(.easeInOut(duration: 0.14), value: viewModel.isPushToTalkRecording)
-            .contentShape(Circle())
+            .animation(.easeInOut(duration: 0.18), value: viewModel.isProcessing)
+            .contentShape(Capsule(style: .continuous))
             .gesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { _ in
@@ -153,77 +168,87 @@ struct WatchContentView: View {
                         viewModel.endPushToTalkRecording()
                     }
             )
-            .accessibilityLabel("Hold to talk")
+            .allowsHitTesting(viewModel.hasAPIKey && !viewModel.isProcessing)
+            .accessibilityLabel(viewModel.isProcessing ? "Processing" : "Microphone")
             .accessibilityAddTraits(.isButton)
     }
 
-    private var pushToTalkStatusText: String {
+    private var microphoneButtonTint: Color {
         if viewModel.isPushToTalkRecording {
-            return "Release to send"
+            return Color(red: 1, green: 0.12, blue: 0.18)
         }
 
-        switch viewModel.state {
-        case .connecting:
-            return "Connecting"
-        case .speaking:
-            return "Speaking"
-        case .stopping:
-            return "Stopping"
-        case .failed:
-            return "Failed"
-        default:
-            return "Hold to talk"
+        if viewModel.isProcessing {
+            return Color(red: 0.5, green: 0.55, blue: 0.62)
         }
+
+        return chatAccentColor
     }
 
-    private var conversationModeSelector: some View {
-        HStack(spacing: 2) {
-            ForEach(RealtimeConversationMode.allCases) { mode in
-                Button {
-                    withAnimation(.easeInOut(duration: 0.14)) {
-                        viewModel.selectConversationMode(mode)
-                    }
-                } label: {
-                    modeSelectorItem(mode.title, isSelected: viewModel.selectedConversationMode == mode)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(mode.accessibilityLabel)
-                .accessibilityValue(viewModel.selectedConversationMode == mode ? "Selected" : "Not selected")
-                .disabled(!viewModel.canChangeConversationMode)
-            }
+    private func scrollToBottom(_ proxy: ScrollViewProxy) {
+        withAnimation(.easeOut(duration: 0.18)) {
+            proxy.scrollTo(bottomID, anchor: .bottom)
         }
-        .padding(3)
-        .frame(width: 120, height: 30)
-        .background(Color.white.opacity(0.12))
-        .clipShape(Capsule())
-    }
-
-    private func modeSelectorItem(_ title: String, isSelected: Bool) -> some View {
-        Text(title)
-            .font(.system(size: 12, weight: .semibold))
-            .foregroundStyle(isSelected ? Color.black : Color.white.opacity(0.75))
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(isSelected ? Color.green : Color.clear)
-            .clipShape(Capsule())
     }
 }
 
-private extension RealtimeConversationMode {
-    var title: String {
-        switch self {
-        case .auto:
-            return "Auto"
-        case .pushToTalk:
-            return "PTT"
+private struct ProcessingDotsIcon: View {
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
+            HStack(spacing: 4) {
+                ForEach(0..<3, id: \.self) { index in
+                    let wave = dotWave(at: timeline.date, index: index)
+
+                    Circle()
+                        .fill(.white)
+                        .frame(width: 6, height: 6)
+                        .opacity(0.42 + wave * 0.58)
+                        .scaleEffect(0.72 + wave * 0.32)
+                }
+            }
         }
+        .frame(width: 32, height: 22)
+        .accessibilityHidden(true)
     }
 
-    var accessibilityLabel: String {
-        switch self {
-        case .auto:
-            return "Auto mode"
-        case .pushToTalk:
-            return "Push to talk mode"
+    private func dotWave(at date: Date, index: Int) -> Double {
+        let phase = date.timeIntervalSinceReferenceDate * 1.4 - Double(index) * 0.18
+        return (sin(phase * .pi * 2) + 1) / 2
+    }
+}
+
+private extension View {
+    @ViewBuilder
+    func pttGlassButton(tint: Color, isInteractive: Bool) -> some View {
+        if #available(watchOS 26.0, *) {
+            self
+                .background {
+                    ZStack {
+                        Capsule(style: .continuous)
+                            .fill(.white.opacity(0.08))
+                        Capsule(style: .continuous)
+                            .fill(tint.opacity(0.04))
+                    }
+                }
+                .glassEffect(
+                    .regular.tint(tint.opacity(0.3)).interactive(isInteractive),
+                    in: Capsule(style: .continuous)
+                )
+                .overlay {
+                    Capsule(style: .continuous)
+                        .stroke(.white.opacity(0.58), lineWidth: 0.8)
+                }
+        } else {
+            self
+                .background(.ultraThinMaterial, in: Capsule(style: .continuous))
+                .overlay {
+                    Capsule(style: .continuous)
+                        .fill(tint.opacity(0.12))
+                }
+                .overlay {
+                    Capsule(style: .continuous)
+                        .stroke(.white.opacity(0.46), lineWidth: 0.8)
+                }
         }
     }
 }

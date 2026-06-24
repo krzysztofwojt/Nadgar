@@ -46,7 +46,6 @@ public enum PhoneToWatchMessage: Equatable, Sendable {
     case syncAPIKey(String)
     case deleteAPIKey
     case keyStatusResponse(hasKey: Bool)
-    case tokenResponse(String)
     case authUnavailable(String)
     case error(String)
 
@@ -62,8 +61,6 @@ public enum PhoneToWatchMessage: Equatable, Sendable {
             return MessageEnvelope(type: "deleteAPIKey")
         case .keyStatusResponse(let hasKey):
             return try MessageEnvelope(type: "keyStatusResponse", payload: encode(KeyStatusPayload(hasKey: hasKey)))
-        case .tokenResponse(let token):
-            return try MessageEnvelope(type: "tokenResponse", payload: encode(TokenPayload(value: token)))
         case .authUnavailable(let message):
             return try MessageEnvelope(type: "authUnavailable", payload: encode(MessagePayload(message: message)))
         case .error(let message):
@@ -83,8 +80,6 @@ public enum PhoneToWatchMessage: Equatable, Sendable {
             self = .deleteAPIKey
         case "keyStatusResponse":
             self = .keyStatusResponse(hasKey: try decodePayload(KeyStatusPayload.self, from: envelope).hasKey)
-        case "tokenResponse":
-            self = .tokenResponse(try decodePayload(TokenPayload.self, from: envelope).value)
         case "authUnavailable":
             self = .authUnavailable(try decodePayload(MessagePayload.self, from: envelope).message)
         case "error":
@@ -100,7 +95,6 @@ public enum WatchToPhoneMessage: Equatable, Sendable {
     case requestSettings
     case keyStatusRequest
     case keyStatusResponse(hasKey: Bool)
-    case requestRealtimeToken(ProviderSettings)
     case reportConnectionState(RealtimeConnectionState)
 
     public func envelope() throws -> MessageEnvelope {
@@ -113,8 +107,6 @@ public enum WatchToPhoneMessage: Equatable, Sendable {
             return MessageEnvelope(type: "keyStatusRequest")
         case .keyStatusResponse(let hasKey):
             return try MessageEnvelope(type: "keyStatusResponse", payload: encode(KeyStatusPayload(hasKey: hasKey)))
-        case .requestRealtimeToken(let settings):
-            return try MessageEnvelope(type: "requestRealtimeToken", payload: encode(settings))
         case .reportConnectionState(let state):
             return try MessageEnvelope(type: "reportConnectionState", payload: encode(StatePayload(state: state)))
         }
@@ -130,8 +122,6 @@ public enum WatchToPhoneMessage: Equatable, Sendable {
             self = .keyStatusRequest
         case "keyStatusResponse":
             self = .keyStatusResponse(hasKey: try decodePayload(KeyStatusPayload.self, from: envelope).hasKey)
-        case "requestRealtimeToken":
-            self = .requestRealtimeToken(try decodePayload(ProviderSettings.self, from: envelope))
         case "reportConnectionState":
             self = .reportConnectionState(try decodePayload(StatePayload.self, from: envelope).state)
         default:
@@ -155,10 +145,6 @@ public enum MessageCodingError: LocalizedError, Equatable {
             return "Unknown message type: \(type)."
         }
     }
-}
-
-private struct TokenPayload: Codable, Equatable {
-    let value: String
 }
 
 private struct APIKeyPayload: Codable, Equatable {

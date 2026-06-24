@@ -5,82 +5,78 @@ import WristAssistShared
 
 @MainActor
 final class WatchVoiceViewModel: ObservableObject {
-    private static let localBargeInGuardMilliseconds = 350
-    private static let localBargeInMinimumSpeechMilliseconds = 180
-    private static let localBargeInMinimumInputRMS: Float = 0.014
-    private static let localBargeInOutputRelativeThreshold: Float = 0.25
-    private static let minimumPushToTalkCommitMilliseconds = 100
+    private static let minimumRecordingMilliseconds = 250
+    private static let transcriptionPlaceholderText = "Transcribing..."
+    private static let transcriptionFailedPlaceholderText = "Transcription failed"
+    private static let assistantPlaceholderText = "Writing..."
+    private static let assistantFailedPlaceholderText = "Response failed"
+    private static let recordingStartFailedText = "Recording could not be started."
     private static let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "com.kwojt.WristAssist.watchkitapp",
         category: "WatchVoiceViewModel"
     )
 
-    @Published private(set) var state: RealtimeConnectionState
+    @Published private(set) var pttState: WatchPTTState
     @Published private(set) var settings: ProviderSettings
     @Published private(set) var errorMessage: String?
-    @Published private(set) var selectedConversationMode: RealtimeConversationMode
+    @Published private(set) var messages: [ChatMessage]
     @Published private(set) var isPushToTalkRecording = false
 
     var hasAPIKey: Bool {
-        apiKey?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+        normalizedAPIKey != nil
     }
 
-    var isIdle: Bool {
-        state == .idle
+    var canBeginRecording: Bool {
+        hasAPIKey &&
+            !isPushToTalkRecording &&
+            !isRecordingStartPending &&
+            (pttState == .ready || pttState == .failed)
     }
 
-    var isRunning: Bool {
-        switch state {
-        case .idle, .failed:
-            return false
-        case .requestingToken, .connecting, .listening, .speaking, .stopping:
-            return true
-        }
+    var isProcessing: Bool {
+        pttState == .transcribing || pttState == .thinking
     }
 
-    var canChangeConversationMode: Bool {
-        !isRunning
-    }
-
-    var isPushToTalkSession: Bool {
-        activeConversationMode == .pushToTalk
+    var statusText: String {
+        pttState.statusText
     }
 
     private let connectivity: WatchConnectivityClient
     private let configurationStore: WatchConfigurationStore
-    private let conversationModeStore: WatchConversationModeStore
-    private var realtimeClient: RealtimeWebSocketClient?
-    private var audioPipeline: WatchAudioPipeline?
+    private let recorder: WatchPTTRecorder
+    private let transcriptionClient: OpenAITranscriptionClient
+    private let responsesClient: OpenAIResponsesClient
+    private let openAITestMode: WatchOpenAITestMode
     private var apiKey: String?
-    private var activeConversationMode: RealtimeConversationMode?
-    private var isAssistantResponseActive = false
-    private var hasPendingAssistantPlayback = false
-    private var activeAssistantOutput: ActiveAssistantOutput?
-    private var interruptedAssistantOutputs = Set<ActiveAssistantOutput>()
-    private var localBargeInSpeechMilliseconds = 0
-    private var suppressedInputChunkCount = 0
     private var isPushToTalkHoldActive = false
-    private var isPushToTalkStartPending = false
+    private var isRecordingStartPending = false
     private var shouldFinishPushToTalkAfterStart = false
-    private var pushToTalkForwardedChunkCount = 0
-    private var pushToTalkForwardedMilliseconds = 0
+    private var activeRecordingStartID: UUID?
+    private var activeTurnID = UUID()
 
-    init() {
-        let configurationStore = WatchConfigurationStore()
+    init(
+        connectivity: WatchConnectivityClient = WatchConnectivityClient(),
+        configurationStore: WatchConfigurationStore = WatchConfigurationStore(),
+        recorder: WatchPTTRecorder? = nil,
+        transcriptionClient: OpenAITranscriptionClient = OpenAITranscriptionClient(),
+        responsesClient: OpenAIResponsesClient = OpenAIResponsesClient(),
+        openAITestMode: WatchOpenAITestMode = .current
+    ) {
         let localConfiguration = configurationStore.loadConfiguration()
-        let conversationModeStore = WatchConversationModeStore()
 
+        self.connectivity = connectivity
         self.configurationStore = configurationStore
-        self.conversationModeStore = conversationModeStore
-        self.connectivity = WatchConnectivityClient()
-        self.state = .idle
+        self.recorder = recorder ?? WatchPTTRecorder()
+        self.transcriptionClient = transcriptionClient
+        self.responsesClient = responsesClient
+        self.openAITestMode = openAITestMode
+        self.pttState = .ready
         self.settings = localConfiguration.settings
-        self.apiKey = try? configurationStore.loadAPIKey()
-        self.selectedConversationMode = conversationModeStore.loadMode()
+        self.apiKey = openAITestMode.apiKeyOverride ?? (try? configurationStore.loadAPIKey())
+        self.messages = []
 
-        connectivity.hasLocalAPIKey = { [weak self] in
-            self?.hasAPIKey ?? false
-        }
+        self.recorder.cleanupTemporaryFiles()
+
         connectivity.onConfigurationChanged = { [weak self] configuration in
             Task { @MainActor in
                 self?.applyConfiguration(configuration)
@@ -92,12 +88,19 @@ final class WatchVoiceViewModel: ObservableObject {
             }
         }
         connectivity.onSyncAPIKey = { [weak self] apiKey in
-            self?.syncAPIKey(apiKey) ?? false
+            self?.syncAPIKeyFromPhone(apiKey) ?? false
         }
         connectivity.onDeleteAPIKey = { [weak self] in
-            self?.deleteAPIKey() ?? false
+            self?.deleteAPIKeyFromWatch() ?? false
+        }
+        connectivity.hasLocalAPIKey = { [weak self] in
+            self?.hasAPIKey ?? false
         }
         connectivity.activate()
+
+        if openAITestMode.isEnabled {
+            Self.logger.info("openai mock mode enabled")
+        }
     }
 
     func requestInitialSettings() async {
@@ -107,141 +110,186 @@ final class WatchVoiceViewModel: ObservableObject {
             errorMessage = nil
         }
 
-        do {
-            try await connectivity.requestKeyStatus()
-        } catch {
-            errorMessage = nil
+        if !openAITestMode.isEnabled {
+            try? await connectivity.requestKeyStatus()
+        }
+
+        await prewarmRecorderIfPossible()
+    }
+
+    func prepareForForeground() async {
+        await prewarmRecorderIfPossible()
+    }
+
+    func suspendAudioWarmup() {
+        recorder.cancel()
+
+        guard isPushToTalkRecording || isRecordingStartPending || isPushToTalkHoldActive else {
+            return
+        }
+
+        activeTurnID = UUID()
+        activeRecordingStartID = nil
+        isPushToTalkHoldActive = false
+        isRecordingStartPending = false
+        shouldFinishPushToTalkAfterStart = false
+        isPushToTalkRecording = false
+
+        if pttState == .recording {
+            pttState = .ready
         }
     }
 
-    func startOrStop() {
+    func beginPushToTalkRecording() {
+        guard !isPushToTalkHoldActive else { return }
+        isPushToTalkHoldActive = true
+
+        guard canBeginRecording else {
+            Self.logger.info("ptt begin ignored state=\(self.pttState.rawValue, privacy: .public) hasKey=\(self.hasAPIKey, privacy: .public)")
+            return
+        }
+
+        errorMessage = nil
+        isRecordingStartPending = true
+        shouldFinishPushToTalkAfterStart = false
+        isPushToTalkRecording = true
+        pttState = .recording
+        let recordingStartID = UUID()
+        activeRecordingStartID = recordingStartID
+        Self.logger.info("ptt recording requested")
+
         Task {
-            if isRunning {
-                await stop()
-            } else {
-                await start()
+            do {
+                try await recorder.start()
+                guard activeRecordingStartID == recordingStartID else {
+                    Self.logger.info("ptt recording start ignored because it is stale")
+                    return
+                }
+
+                activeRecordingStartID = nil
+                isRecordingStartPending = false
+                Self.logger.info("ptt recording active")
+
+                if shouldFinishPushToTalkAfterStart || !isPushToTalkHoldActive {
+                    shouldFinishPushToTalkAfterStart = false
+                    await finishPushToTalkRecordingIfNeeded()
+                }
+            } catch {
+                guard activeRecordingStartID == recordingStartID else {
+                    Self.logger.info("ptt recording start failure ignored because it is stale")
+                    return
+                }
+
+                activeRecordingStartID = nil
+                isRecordingStartPending = false
+                shouldFinishPushToTalkAfterStart = false
+                isPushToTalkRecording = false
+                isPushToTalkHoldActive = false
+                recorder.cancel()
+
+                if (error as? WatchPTTRecorderError) == .recordingStartCancelled {
+                    pttState = .ready
+                    errorMessage = nil
+                    Self.logger.info("ptt recording start cancelled")
+                    return
+                }
+
+                pttState = .failed
+                errorMessage = error.localizedDescription
+                appendRecordingStartFailure(error.localizedDescription)
+                Self.logger.error("ptt recording start failed error=\(error.localizedDescription, privacy: .public)")
             }
         }
     }
 
-    func selectConversationMode(_ mode: RealtimeConversationMode) {
-        guard canChangeConversationMode else {
-            Self.logger.info("conversation mode change ignored state=\(self.state.rawValue, privacy: .public)")
+    func endPushToTalkRecording() {
+        guard isPushToTalkHoldActive || isPushToTalkRecording || isRecordingStartPending else { return }
+        isPushToTalkHoldActive = false
+
+        if isRecordingStartPending {
+            shouldFinishPushToTalkAfterStart = true
             return
         }
 
-        selectedConversationMode = mode
-        conversationModeStore.saveMode(mode)
-        Self.logger.info("conversation mode selected mode=\(mode.rawValue, privacy: .public)")
-    }
-
-    func beginPushToTalkRecording() {
-        isPushToTalkHoldActive = true
-        Task {
-            await beginPushToTalkRecordingIfNeeded()
-        }
-    }
-
-    func endPushToTalkRecording() {
-        isPushToTalkHoldActive = false
-        if isPushToTalkStartPending {
-            shouldFinishPushToTalkAfterStart = true
-        }
         Task {
             await finishPushToTalkRecordingIfNeeded()
         }
     }
 
-    private func start() async {
-        guard let apiKey, !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            state = .idle
+    private func finishPushToTalkRecordingIfNeeded() async {
+        guard isPushToTalkRecording else { return }
+        isPushToTalkRecording = false
+        shouldFinishPushToTalkAfterStart = false
+
+        guard let apiKey = normalizedAPIKey else {
+            recorder.cancel()
+            pttState = .ready
             errorMessage = nil
-            Self.logger.info("start ignored reason=missing_api_key")
             return
         }
 
-        do {
-            errorMessage = nil
-            let mode = selectedConversationMode
-            activeConversationMode = mode
-            state = .connecting
-            Self.logger.info("conversation start state=connecting model=\(self.settings.model, privacy: .public) voice=\(self.settings.voice, privacy: .public) mode=\(mode.rawValue, privacy: .public)")
-            try? await connectivity.reportState(state)
+        let turnID = UUID()
+        activeTurnID = turnID
+        pttState = .transcribing
+        let userPlaceholderID = appendTranscribingPlaceholder()
+        Self.logger.info("ptt recording finishing")
 
-            let client = RealtimeWebSocketClient()
-            let pipeline = WatchAudioPipeline()
-            resetAssistantOutputState()
-
-            try await client.connect(
-                token: apiKey,
-                settings: settings,
-                mode: mode,
-                eventHandler: { [weak self] event in
-                    Task { @MainActor in
-                        self?.handle(event)
-                    }
-                },
-                audioHandler: { [weak self] audioDelta, data in
-                    Task { @MainActor in
-                        self?.handleOutputAudio(audioDelta, data: data, pipeline: pipeline)
-                    }
-                }
-            )
-
-            try await pipeline.start(
-                onInputAudio: { [weak self] chunk in
-                    Task { @MainActor in
-                        await self?.handleInputAudio(chunk, client: client)
-                    }
-                },
-                onOutputPlaybackDrained: { [weak self] in
-                    Task { @MainActor in
-                        self?.handleOutputPlaybackDrained()
-                    }
-                }
-            )
-
-            realtimeClient = client
-            audioPipeline = pipeline
-            state = .listening
-            Self.logger.info("conversation ready state=listening")
-            try? await connectivity.reportState(state)
-        } catch {
-            await stop()
-            state = .failed
-            errorMessage = SecretRedactor.redact(error.localizedDescription)
-            Self.logger.error("conversation failed error=\(self.errorMessage ?? "", privacy: .public)")
-            try? await connectivity.reportState(state)
+        var recordedFile: WatchRecordedAudioFile?
+        var assistantPlaceholderID: UUID?
+        defer {
+            recorder.deleteTemporaryFile(at: recordedFile?.url)
         }
-    }
 
-    private func stop() async {
-        Self.logger.info("conversation stop requested state=\(self.state.rawValue, privacy: .public)")
-        state = .stopping
-        resetAssistantOutputState()
-        resetPushToTalkState()
-        audioPipeline?.stop()
-        audioPipeline = nil
-        await realtimeClient?.stop()
-        realtimeClient = nil
-        activeConversationMode = nil
-        state = .idle
-        Self.logger.info("conversation stopped state=idle")
-        try? await connectivity.reportState(state)
+        do {
+            let file = try recorder.finish()
+            recordedFile = file
+            await prewarmRecorderIfPossible()
+
+            guard file.durationMilliseconds >= Self.minimumRecordingMilliseconds else {
+                removeMessage(id: userPlaceholderID)
+                pttState = .ready
+                errorMessage = nil
+                Self.logger.info("ptt recording ignored reason=too_short durationMs=\(file.durationMilliseconds, privacy: .public)")
+                return
+            }
+
+            let transcript = try await transcribe(file: file, apiKey: apiKey)
+            guard activeTurnID == turnID else { return }
+
+            updateTranscribingPlaceholder(id: userPlaceholderID, transcript: transcript)
+            pttState = .thinking
+            assistantPlaceholderID = appendAssistantPlaceholder()
+            Self.logger.info("ptt transcript appended characters=\(transcript.count, privacy: .public)")
+
+            let assistantText = try await assistantResponse(apiKey: apiKey, messages: messages)
+            guard activeTurnID == turnID else { return }
+
+            updateAssistantPlaceholder(id: assistantPlaceholderID, response: assistantText)
+            pttState = .ready
+            errorMessage = nil
+            Self.logger.info("ptt assistant response appended characters=\(assistantText.count, privacy: .public)")
+        } catch {
+            guard activeTurnID == turnID else { return }
+            let failureDescription = error.localizedDescription
+            failTranscribingPlaceholder(id: userPlaceholderID, errorDescription: failureDescription)
+            failAssistantPlaceholder(id: assistantPlaceholderID, errorDescription: failureDescription)
+            pttState = .failed
+            errorMessage = failureDescription
+            recorder.cancel()
+            await prewarmRecorderIfPossible()
+            Self.logger.error("ptt turn failed error=\(failureDescription, privacy: .public)")
+        }
     }
 
     private func applyConfiguration(_ configuration: WatchConfiguration) {
-        do {
-            let updatedSettings = localSettings(from: configuration.settings)
-            try configurationStore.saveSettings(updatedSettings)
-            settings = updatedSettings
-            errorMessage = nil
-        } catch {
-            errorMessage = error.localizedDescription
-        }
+        applySettings(configuration.settings)
     }
 
     private func applySettingsOnly(_ incomingSettings: ProviderSettings) {
+        applySettings(incomingSettings)
+    }
+
+    private func applySettings(_ incomingSettings: ProviderSettings) {
         var updatedSettings = incomingSettings
         updatedSettings.hasAPIKey = hasAPIKey
 
@@ -254,13 +302,31 @@ final class WatchVoiceViewModel: ObservableObject {
         }
     }
 
-    private func syncAPIKey(_ apiKey: String) -> Bool {
+    private func syncAPIKeyFromPhone(_ incomingAPIKey: String) -> Bool {
+        guard !openAITestMode.isEnabled else {
+            return true
+        }
+
+        let trimmed = incomingAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return deleteAPIKeyFromWatch()
+        }
+
         do {
-            try configurationStore.saveAPIKey(apiKey)
-            self.apiKey = apiKey
-            settings.hasAPIKey = true
-            try configurationStore.saveSettings(settings)
+            let previousAPIKey = normalizedAPIKey
+            try configurationStore.saveAPIKey(trimmed)
+            apiKey = trimmed
+            setSettingsHasAPIKey(true)
             errorMessage = nil
+
+            if previousAPIKey != trimmed {
+                resetSessionForCredentialChange()
+            }
+
+            Task { @MainActor in
+                await self.prewarmRecorderIfPossible()
+            }
+
             return true
         } catch {
             errorMessage = error.localizedDescription
@@ -268,479 +334,251 @@ final class WatchVoiceViewModel: ObservableObject {
         }
     }
 
-    private func deleteAPIKey() -> Bool {
-        let shouldStop = isRunning
+    private func deleteAPIKeyFromWatch() -> Bool {
+        guard !openAITestMode.isEnabled else {
+            return true
+        }
 
         do {
             try configurationStore.deleteAPIKey()
             apiKey = nil
-            settings.hasAPIKey = false
-            try configurationStore.saveSettings(settings)
+            setSettingsHasAPIKey(false)
             errorMessage = nil
-
-            if shouldStop {
-                Task {
-                    await stop()
-                }
-            }
-
-            return false
+            resetSessionForCredentialChange()
         } catch {
             errorMessage = error.localizedDescription
-            return hasAPIKey
         }
+
+        return hasAPIKey
     }
 
-    private func localSettings(from incomingSettings: ProviderSettings) -> ProviderSettings {
-        var updatedSettings = incomingSettings
+    private func setSettingsHasAPIKey(_ hasAPIKey: Bool) {
+        var updatedSettings = settings
         updatedSettings.hasAPIKey = hasAPIKey
-        return updatedSettings
+        settings = updatedSettings
+        try? configurationStore.saveSettings(updatedSettings)
     }
 
-    private func handle(_ event: RealtimeServerEvent) {
-        let stateBefore = state
-        logEvent(event, state: stateBefore)
-
-        switch event {
-        case .sessionCreated:
-            state = .listening
-        case .inputSpeechStarted:
-            if isAssistantResponseActive || hasPendingAssistantPlayback {
-                Self.logger.info("decision=clear_server_speech_started_during_assistant activeResponse=\(self.isAssistantResponseActive, privacy: .public) pendingPlayback=\(self.hasPendingAssistantPlayback, privacy: .public)")
-                clearLikelyEchoInput()
-                state = .speaking
-            } else {
-                state = .listening
-            }
-        case .inputSpeechStopped:
-            break
-        case .responseCreated:
-            isAssistantResponseActive = true
-            state = .speaking
-        case .responseDone:
-            isAssistantResponseActive = false
-            finishAssistantOutputIfReady()
-        case .audioDone:
-            finishAssistantOutputIfReady()
-        case .audioDelta:
-            isAssistantResponseActive = true
-            hasPendingAssistantPlayback = true
-            state = .speaking
-        case .error(let message):
-            guard !isRecoverableRealtimeError(message) else {
-                Self.logger.info("server recoverable_error ignored message=\(SecretRedactor.redact(message), privacy: .public)")
-                return
-            }
-            state = .failed
-            errorMessage = SecretRedactor.redact(message)
-        case .unknown:
-            break
-        }
-
-        if state != stateBefore {
-            Self.logger.info("state transition \(stateBefore.rawValue, privacy: .public) -> \(self.state.rawValue, privacy: .public) after=\(self.eventName(event), privacy: .public)")
-        }
-    }
-
-    private func handleInputAudio(
-        _ chunk: WatchInputAudioChunk,
-        client: RealtimeWebSocketClient
-    ) async {
-        if activeConversationMode == .pushToTalk {
-            await handlePushToTalkInputAudio(chunk, client: client)
-            return
-        }
-
-        if shouldForwardInputAudioToRealtime {
-            resetLocalInputRoutingState()
-            try? await client.sendInputAudio(base64PCM16: chunk.base64PCM16)
-            return
-        }
-
-        suppressedInputChunkCount += 1
-        if suppressedInputChunkCount == 1 || suppressedInputChunkCount.isMultiple(of: 25) {
-            Self.logger.debug("suppress input during assistant count=\(self.suppressedInputChunkCount, privacy: .public) inputRMS=\(chunk.inputRMS, privacy: .public) outputRMS=\(chunk.outputRMS, privacy: .public) outputPlayedMs=\(chunk.outputPlayedMilliseconds, privacy: .public)")
-        }
-
-        guard shouldTriggerLocalBargeIn(with: chunk) else {
-            return
-        }
-
-        Self.logger.info("decision=local_barge_in inputRMS=\(chunk.inputRMS, privacy: .public) outputRMS=\(chunk.outputRMS, privacy: .public) speechMs=\(self.localBargeInSpeechMilliseconds, privacy: .public) outputPlayedMs=\(chunk.outputPlayedMilliseconds, privacy: .public)")
-        await handleBargeIn(client: client, firstInputChunk: chunk)
-    }
-
-    private func handlePushToTalkInputAudio(
-        _ chunk: WatchInputAudioChunk,
-        client: RealtimeWebSocketClient
-    ) async {
-        guard isPushToTalkRecording else {
-            suppressedInputChunkCount += 1
-            if suppressedInputChunkCount == 1 || suppressedInputChunkCount.isMultiple(of: 25) {
-                Self.logger.debug("suppress input ptt_idle count=\(self.suppressedInputChunkCount, privacy: .public) inputRMS=\(chunk.inputRMS, privacy: .public) outputRMS=\(chunk.outputRMS, privacy: .public) outputPlayedMs=\(chunk.outputPlayedMilliseconds, privacy: .public)")
-            }
-            return
-        }
-
-        resetLocalInputRoutingState()
-        pushToTalkForwardedChunkCount += 1
-        pushToTalkForwardedMilliseconds += max(chunk.durationMilliseconds, 0)
-        try? await client.sendInputAudio(base64PCM16: chunk.base64PCM16)
-    }
-
-    private func handleOutputAudio(
-        _ audioDelta: RealtimeOutputAudioDelta,
-        data: Data,
-        pipeline: WatchAudioPipeline
-    ) {
-        guard !isInterruptedOutput(audioDelta.metadata) else {
-            return
-        }
-
-        updateActiveAssistantOutput(with: audioDelta, pipeline: pipeline)
-        isAssistantResponseActive = true
-        hasPendingAssistantPlayback = true
-        state = .speaking
-        Self.logger.debug("enqueue output audio responseID=\(audioDelta.metadata.responseID ?? "nil", privacy: .public) itemID=\(audioDelta.metadata.itemID ?? "nil", privacy: .public) bytes=\(data.count, privacy: .public)")
-        pipeline.enqueueOutputAudio(data)
-    }
-
-    private func handleOutputPlaybackDrained() {
-        Self.logger.info("output playback drained activeResponse=\(self.isAssistantResponseActive, privacy: .public)")
-        hasPendingAssistantPlayback = false
-        finishAssistantOutputIfReady()
-    }
-
-    private func handleBargeIn(
-        client: RealtimeWebSocketClient,
-        firstInputChunk: WatchInputAudioChunk
-    ) async {
-        await interruptAssistantOutput(client: client, reason: "barge_in")
-        try? await client.sendInputAudio(base64PCM16: firstInputChunk.base64PCM16)
-    }
-
-    private func interruptAssistantOutput(
-        client: RealtimeWebSocketClient,
-        reason: String,
-        clearInputBuffer: Bool = true
-    ) async {
-        let interruptedOutput = activeAssistantOutput
-        let shouldCancelResponse = isAssistantResponseActive
-        let audioEndMilliseconds = audioPipeline?.stopOutputPlaybackAndClearQueue() ?? 0
-
-        Self.logger.info("assistant interrupt reason=\(reason, privacy: .public) responseID=\(interruptedOutput?.responseID ?? "nil", privacy: .public) itemID=\(interruptedOutput?.itemID ?? "nil", privacy: .public) shouldCancel=\(shouldCancelResponse, privacy: .public) audioEndMs=\(audioEndMilliseconds, privacy: .public)")
-
-        if let interruptedOutput {
-            interruptedAssistantOutputs.insert(interruptedOutput)
-        }
-
-        isAssistantResponseActive = false
-        hasPendingAssistantPlayback = false
-        activeAssistantOutput = nil
-        resetLocalInputRoutingState()
-        state = .listening
-
-        if clearInputBuffer {
-            try? await client.clearInputAudio()
-        }
-
-        if shouldCancelResponse {
-            try? await client.cancelResponse(responseID: interruptedOutput?.responseID)
-        }
-
-        if let interruptedOutput {
-            try? await client.truncateConversationItem(
-                itemID: interruptedOutput.itemID,
-                contentIndex: interruptedOutput.contentIndex,
-                audioEndMilliseconds: audioEndMilliseconds
-            )
-        }
-    }
-
-    private func beginPushToTalkRecordingIfNeeded() async {
-        guard activeConversationMode == .pushToTalk,
-              isPushToTalkHoldActive,
-              !isPushToTalkRecording,
-              !isPushToTalkStartPending,
-              state != .idle,
-              state != .failed,
-              state != .stopping,
-              let realtimeClient
-        else {
-            return
-        }
-
-        isPushToTalkStartPending = true
+    private func resetSessionForCredentialChange() {
+        activeTurnID = UUID()
+        activeRecordingStartID = nil
+        recorder.cancel()
+        recorder.cleanupTemporaryFiles()
+        messages.removeAll()
+        isPushToTalkHoldActive = false
+        isRecordingStartPending = false
         shouldFinishPushToTalkAfterStart = false
-        pushToTalkForwardedChunkCount = 0
-        pushToTalkForwardedMilliseconds = 0
-        isPushToTalkRecording = true
-        state = .listening
-        resetLocalInputRoutingState()
-
-        Self.logger.info("ptt recording begin requested state=\(self.state.rawValue, privacy: .public) activeResponse=\(self.isAssistantResponseActive, privacy: .public) pendingPlayback=\(self.hasPendingAssistantPlayback, privacy: .public)")
-
-        if isAssistantResponseActive || hasPendingAssistantPlayback {
-            await interruptAssistantOutput(
-                client: realtimeClient,
-                reason: "ptt_begin",
-                clearInputBuffer: false
-            )
-        } else {
-            resetLocalInputRoutingState()
-        }
-
-        isPushToTalkStartPending = false
-        Self.logger.info("ptt recording started")
-
-        if shouldFinishPushToTalkAfterStart || !isPushToTalkHoldActive {
-            shouldFinishPushToTalkAfterStart = false
-            await finishPushToTalkRecordingIfNeeded()
-        }
-    }
-
-    private func finishPushToTalkRecordingIfNeeded() async {
-        guard activeConversationMode == .pushToTalk,
-              isPushToTalkRecording,
-              let realtimeClient
-        else {
-            return
-        }
-
-        guard !isPushToTalkStartPending else {
-            shouldFinishPushToTalkAfterStart = true
-            return
-        }
-
         isPushToTalkRecording = false
-        shouldFinishPushToTalkAfterStart = false
-        let chunkCount = pushToTalkForwardedChunkCount
-        let durationMilliseconds = pushToTalkForwardedMilliseconds
-        pushToTalkForwardedChunkCount = 0
-        pushToTalkForwardedMilliseconds = 0
+        pttState = .ready
+    }
 
-        guard chunkCount > 0 else {
-            Self.logger.info("ptt recording discarded reason=no_audio")
-            try? await realtimeClient.clearInputAudio()
-            return
-        }
-
-        guard durationMilliseconds >= Self.minimumPushToTalkCommitMilliseconds else {
-            Self.logger.info("ptt recording discarded reason=too_short chunks=\(chunkCount, privacy: .public) durationMs=\(durationMilliseconds, privacy: .public) minDurationMs=\(Self.minimumPushToTalkCommitMilliseconds, privacy: .public)")
-            try? await realtimeClient.clearInputAudio()
-            return
-        }
+    private func prewarmRecorderIfPossible() async {
+        guard hasAPIKey else { return }
 
         do {
-            Self.logger.info("ptt recording commit chunks=\(chunkCount, privacy: .public) durationMs=\(durationMilliseconds, privacy: .public)")
-            try await realtimeClient.commitInputAudio()
-            guard isCurrentRealtimeClient(realtimeClient) else {
-                Self.logger.info("ptt commit completion ignored reason=stale_client step=commit")
-                return
-            }
-
-            try await realtimeClient.createResponse()
-            guard isCurrentRealtimeClient(realtimeClient) else {
-                Self.logger.info("ptt commit completion ignored reason=stale_client step=create_response")
-                return
-            }
-
-            state = .speaking
+            try await recorder.prewarm()
         } catch {
-            guard isCurrentRealtimeClient(realtimeClient) else {
-                Self.logger.info("ptt commit error ignored reason=stale_client error=\(SecretRedactor.redact(error.localizedDescription), privacy: .public)")
-                return
-            }
-
-            state = .failed
-            errorMessage = SecretRedactor.redact(error.localizedDescription)
-            Self.logger.error("ptt commit failed error=\(self.errorMessage ?? "", privacy: .public)")
-            try? await connectivity.reportState(state)
+            Self.logger.info("ptt recorder prewarm skipped error=\(error.localizedDescription, privacy: .public)")
         }
     }
 
-    private func isCurrentRealtimeClient(_ client: RealtimeWebSocketClient) -> Bool {
-        guard state != .stopping else {
-            return false
+    private func transcribe(file: WatchRecordedAudioFile, apiKey: String) async throws -> String {
+        if openAITestMode.isEnabled {
+            await openAITestMode.simulateTranscriptionDelay()
+            return openAITestMode.transcript(durationMilliseconds: file.durationMilliseconds)
         }
 
-        guard let currentClient = realtimeClient else {
-            return false
-        }
-
-        return client === currentClient
+        return try await transcriptionClient.transcribe(audioURL: file.url, apiKey: apiKey)
     }
 
-    private func clearLikelyEchoInput() {
-        guard let realtimeClient else { return }
-        Self.logger.info("clear likely echo input")
-        Task {
-            try? await realtimeClient.clearInputAudio()
+    private func assistantResponse(apiKey: String, messages: [ChatMessage]) async throws -> String {
+        if openAITestMode.isEnabled {
+            await openAITestMode.simulateResponseDelay()
+            return openAITestMode.assistantText(turnNumber: messages.filter { $0.role == .user && !$0.isPlaceholder }.count)
         }
+
+        return try await responsesClient.responseText(
+            apiKey: apiKey,
+            settings: settings,
+            messages: messages
+        )
     }
 
-    private func updateActiveAssistantOutput(
-        with audioDelta: RealtimeOutputAudioDelta,
-        pipeline: WatchAudioPipeline
-    ) {
-        guard let itemID = audioDelta.metadata.itemID else {
+    private func appendTranscribingPlaceholder() -> UUID {
+        let message = ChatMessage(
+            role: .user,
+            text: Self.transcriptionPlaceholderText,
+            isPlaceholder: true
+        )
+        messages.append(message)
+        return message.id
+    }
+
+    private func appendRecordingStartFailure(_ errorDescription: String) {
+        let trimmedDescription = errorDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+        let text = trimmedDescription.isEmpty ? Self.recordingStartFailedText : trimmedDescription
+
+        if let lastMessage = messages.last,
+           lastMessage.role == .assistant,
+           lastMessage.isPlaceholder,
+           lastMessage.text == text
+        {
             return
         }
 
-        let nextOutput = ActiveAssistantOutput(
-            itemID: itemID,
-            responseID: audioDelta.metadata.responseID,
-            contentIndex: audioDelta.metadata.contentIndex
-        )
+        messages.append(ChatMessage(role: .assistant, text: text, isPlaceholder: true))
+    }
 
-        if nextOutput != activeAssistantOutput {
-            Self.logger.info("active output changed itemID=\(nextOutput.itemID, privacy: .public) responseID=\(nextOutput.responseID ?? "nil", privacy: .public) contentIndex=\(nextOutput.contentIndex, privacy: .public)")
-            activeAssistantOutput = nextOutput
-            pipeline.resetOutputPlaybackTracking()
+    private func updateTranscribingPlaceholder(id: UUID, transcript: String) {
+        updateMessage(id: id) { message in
+            message.text = transcript
+            message.isPlaceholder = false
+        } fallback: {
+            self.messages.append(ChatMessage(id: id, role: .user, text: transcript))
         }
     }
 
-    private func finishAssistantOutputIfReady() {
-        if isAssistantResponseActive || hasPendingAssistantPlayback {
-            state = .speaking
-            Self.logger.info("finish output deferred activeResponse=\(self.isAssistantResponseActive, privacy: .public) pendingPlayback=\(self.hasPendingAssistantPlayback, privacy: .public)")
-        } else if state != .failed && state != .idle && state != .stopping {
-            state = .listening
-            Self.logger.info("finish output complete state=listening")
-            activeAssistantOutput = nil
-        }
-    }
+    private func failTranscribingPlaceholder(id: UUID, errorDescription: String) {
+        updateMessage(id: id) { message in
+            guard message.isPlaceholder else { return }
 
-    private func resetAssistantOutputState() {
-        isAssistantResponseActive = false
-        hasPendingAssistantPlayback = false
-        activeAssistantOutput = nil
-        interruptedAssistantOutputs.removeAll()
-        resetLocalInputRoutingState()
-    }
-
-    private func resetPushToTalkState() {
-        isPushToTalkHoldActive = false
-        isPushToTalkStartPending = false
-        shouldFinishPushToTalkAfterStart = false
-        isPushToTalkRecording = false
-        pushToTalkForwardedChunkCount = 0
-        pushToTalkForwardedMilliseconds = 0
-    }
-
-    private func isInterruptedOutput(_ metadata: RealtimeOutputAudioMetadata) -> Bool {
-        guard let itemID = metadata.itemID else {
-            return false
-        }
-
-        return interruptedAssistantOutputs.contains(
-            ActiveAssistantOutput(
-                itemID: itemID,
-                responseID: metadata.responseID,
-                contentIndex: metadata.contentIndex
+            message.text = failurePlaceholderText(
+                prefix: Self.transcriptionFailedPlaceholderText,
+                errorDescription: errorDescription
             )
+            message.isPlaceholder = true
+        }
+    }
+
+    private func appendAssistantPlaceholder() -> UUID {
+        let message = ChatMessage(
+            role: .assistant,
+            text: Self.assistantPlaceholderText,
+            isPlaceholder: true
         )
+        messages.append(message)
+        return message.id
     }
 
-    private func isRecoverableRealtimeError(_ message: String) -> Bool {
-        let normalizedMessage = message.lowercased()
-        return normalizedMessage.contains("cancellation failed")
-            && normalizedMessage.contains("no active response found")
-    }
-
-    private var shouldForwardInputAudioToRealtime: Bool {
-        !isAssistantResponseActive && !hasPendingAssistantPlayback
-    }
-
-    private func shouldTriggerLocalBargeIn(with chunk: WatchInputAudioChunk) -> Bool {
-        guard isAssistantResponseActive || hasPendingAssistantPlayback else {
-            resetLocalInputRoutingState()
-            return false
-        }
-
-        if chunk.isOutputPlaybackActive && chunk.outputPlayedMilliseconds < Self.localBargeInGuardMilliseconds {
-            localBargeInSpeechMilliseconds = 0
-            return false
-        }
-
-        let threshold = max(
-            Self.localBargeInMinimumInputRMS,
-            chunk.outputRMS * Self.localBargeInOutputRelativeThreshold
-        )
-
-        guard chunk.inputRMS >= threshold else {
-            localBargeInSpeechMilliseconds = 0
-            return false
-        }
-
-        localBargeInSpeechMilliseconds += max(chunk.durationMilliseconds, 0)
-        return localBargeInSpeechMilliseconds >= Self.localBargeInMinimumSpeechMilliseconds
-    }
-
-    private func resetLocalInputRoutingState() {
-        localBargeInSpeechMilliseconds = 0
-        suppressedInputChunkCount = 0
-    }
-
-    private func logEvent(_ event: RealtimeServerEvent, state: RealtimeConnectionState) {
-        if case .audioDelta = event {
+    private func updateAssistantPlaceholder(id: UUID?, response: String) {
+        guard let id else {
+            messages.append(ChatMessage(role: .assistant, text: response))
             return
         }
 
-        if case .unknown(let type) = event,
-           type == "response.output_audio_transcript.delta" {
+        updateMessage(id: id) { message in
+            message.text = response
+            message.isPlaceholder = false
+        } fallback: {
+            self.messages.append(ChatMessage(role: .assistant, text: response))
+        }
+    }
+
+    private func failAssistantPlaceholder(id: UUID?, errorDescription: String) {
+        guard let id else { return }
+
+        updateMessage(id: id) { message in
+            message.text = failurePlaceholderText(
+                prefix: Self.assistantFailedPlaceholderText,
+                errorDescription: errorDescription
+            )
+            message.isPlaceholder = true
+        }
+    }
+
+    private func failurePlaceholderText(prefix: String, errorDescription: String) -> String {
+        let trimmedDescription = errorDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedDescription.isEmpty else { return prefix }
+        return "\(prefix): \(trimmedDescription)"
+    }
+
+    private func removeMessage(id: UUID) {
+        messages.removeAll { $0.id == id }
+    }
+
+    private func updateMessage(
+        id: UUID,
+        update: (inout ChatMessage) -> Void,
+        fallback: (() -> Void)? = nil
+    ) {
+        guard let index = messages.firstIndex(where: { $0.id == id }) else {
+            fallback?()
             return
         }
 
-        Self.logger.info("handle event=\(self.eventName(event), privacy: .public) state=\(state.rawValue, privacy: .public) activeResponse=\(self.isAssistantResponseActive, privacy: .public) pendingPlayback=\(self.hasPendingAssistantPlayback, privacy: .public)")
+        var updatedMessages = messages
+        update(&updatedMessages[index])
+        messages = updatedMessages
     }
 
-    private func eventName(_ event: RealtimeServerEvent) -> String {
-        switch event {
-        case .sessionCreated:
-            return "session.created"
-        case .inputSpeechStarted:
-            return "input_audio_buffer.speech_started"
-        case .inputSpeechStopped:
-            return "input_audio_buffer.speech_stopped"
-        case .responseCreated:
-            return "response.created"
-        case .responseDone:
-            return "response.done"
-        case .audioDelta:
-            return "response.output_audio.delta"
-        case .audioDone:
-            return "response.output_audio.done"
-        case .error:
-            return "error"
-        case .unknown(let type):
-            return type
+    private var normalizedAPIKey: String? {
+        if let apiKeyOverride = openAITestMode.apiKeyOverride {
+            return apiKeyOverride
         }
+
+        let trimmed = apiKey?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed?.isEmpty == false ? trimmed : nil
     }
 }
 
-private struct ActiveAssistantOutput: Hashable {
-    var itemID: String
-    var responseID: String?
-    var contentIndex: Int
+struct WatchOpenAITestMode: Equatable {
+    var isEnabled: Bool
+
+    var apiKeyOverride: String? {
+        isEnabled ? "__wristassist_mock_openai__" : nil
+    }
+
+    static let disabled = WatchOpenAITestMode(isEnabled: false)
+
+    static var current: WatchOpenAITestMode {
+        #if DEBUG
+        let processInfo = ProcessInfo.processInfo
+        let isLaunchArgumentEnabled = processInfo.arguments.contains("-WristAssistMockOpenAI")
+        let environmentValue = processInfo.environment["WRISTASSIST_MOCK_OPENAI"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        let isEnvironmentEnabled = ["1", "true", "yes", "on"].contains(environmentValue ?? "")
+
+        return WatchOpenAITestMode(isEnabled: isLaunchArgumentEnabled || isEnvironmentEnabled)
+        #else
+        return .disabled
+        #endif
+    }
+
+    func simulateTranscriptionDelay() async {
+        try? await Task.sleep(nanoseconds: 450_000_000)
+    }
+
+    func simulateResponseDelay() async {
+        try? await Task.sleep(nanoseconds: 650_000_000)
+    }
+
+    func transcript(durationMilliseconds: Int) -> String {
+        let seconds = Double(durationMilliseconds) / 1_000
+        return String(format: "Mock transcript from %.1fs recording.", seconds)
+    }
+
+    func assistantText(turnNumber: Int) -> String {
+        "Mock response \(turnNumber): PTT recording, transcription, and chat rendering completed without OpenAI."
+    }
 }
 
-private struct WatchConfigurationStore {
+struct WatchConfigurationStore {
     private let defaults = UserDefaults.standard
     private let settingsKey = "WatchProviderSettings"
     private let apiKeyStore = WatchAPIKeyStore()
+
+    init() {}
 
     func loadConfiguration() -> WatchConfiguration {
         let settings = loadSettings()
         return WatchConfiguration(settings: settings, hasAPIKey: apiKeyStore.hasAPIKey())
     }
 
-    func saveConfiguration(_ configuration: WatchConfiguration) throws {
-        try saveSettings(configuration.settings)
-    }
-
     func saveSettings(_ settings: ProviderSettings) throws {
-        let data = try JSONEncoder().encode(settings)
+        var normalizedSettings = settings
+        normalizedSettings.hasAPIKey = apiKeyStore.hasAPIKey()
+        let data = try JSONEncoder().encode(normalizedSettings)
         defaults.set(data, forKey: settingsKey)
     }
 
@@ -758,31 +596,15 @@ private struct WatchConfigurationStore {
 
     private func loadSettings() -> ProviderSettings {
         guard let data = defaults.data(forKey: settingsKey),
-              let settings = try? JSONDecoder().decode(ProviderSettings.self, from: data)
+              var settings = try? JSONDecoder().decode(ProviderSettings.self, from: data)
         else {
-            return .default
+            var defaults = ProviderSettings.default
+            defaults.hasAPIKey = apiKeyStore.hasAPIKey()
+            return defaults
         }
 
+        settings.hasAPIKey = apiKeyStore.hasAPIKey()
         return settings
-    }
-}
-
-private struct WatchConversationModeStore {
-    private let defaults = UserDefaults.standard
-    private let modeKey = "WatchConversationMode"
-
-    func loadMode() -> RealtimeConversationMode {
-        guard let rawValue = defaults.string(forKey: modeKey),
-              let mode = RealtimeConversationMode(rawValue: rawValue)
-        else {
-            return .auto
-        }
-
-        return mode
-    }
-
-    func saveMode(_ mode: RealtimeConversationMode) {
-        defaults.set(mode.rawValue, forKey: modeKey)
     }
 }
 

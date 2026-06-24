@@ -21,12 +21,12 @@
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>WristAssist uses the microphone to stream your speech to OpenAI Realtime while a conversation is active.</string>
+	<string>WristAssist uses the microphone to record push-to-talk audio for transcription.</string>
 	<key>WKApplication</key>
 	<true/>
 	<key>WKCompanionAppBundleIdentifier</key>
-	<string>com.kwojt.WristAssist</string>
+	<string>net.kwojt.WristAssist</string>
 	<key>WKRunsIndependentlyOfCompanionApp</key>
-	<false/>
+	<true/>
 </dict>
 </plist>

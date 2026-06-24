@@ -6,8 +6,6 @@ final class PhoneConnectivityController: NSObject, WCSessionDelegate {
     private let settingsProvider: @MainActor () -> ProviderSettings
     private let apiKeyProvider: () throws -> String?
     private let pendingWatchKeyDeletionProvider: @MainActor () -> Bool
-    private let tokenService: OpenAIRealtimeTokenServing
-    private let safetyIdentifierStore = SafetyIdentifierStore()
     private let statusHandler: @MainActor (String) -> Void
     private let errorHandler: @MainActor (String) -> Void
     private let watchKeyStatusHandler: @MainActor (Bool) -> Void
@@ -16,7 +14,6 @@ final class PhoneConnectivityController: NSObject, WCSessionDelegate {
         settingsProvider: @escaping @MainActor () -> ProviderSettings,
         apiKeyProvider: @escaping () throws -> String?,
         pendingWatchKeyDeletionProvider: @escaping @MainActor () -> Bool,
-        tokenService: OpenAIRealtimeTokenServing,
         statusHandler: @escaping @MainActor (String) -> Void,
         errorHandler: @escaping @MainActor (String) -> Void,
         watchKeyStatusHandler: @escaping @MainActor (Bool) -> Void
@@ -24,7 +21,6 @@ final class PhoneConnectivityController: NSObject, WCSessionDelegate {
         self.settingsProvider = settingsProvider
         self.apiKeyProvider = apiKeyProvider
         self.pendingWatchKeyDeletionProvider = pendingWatchKeyDeletionProvider
-        self.tokenService = tokenService
         self.statusHandler = statusHandler
         self.errorHandler = errorHandler
         self.watchKeyStatusHandler = watchKeyStatusHandler
@@ -196,22 +192,6 @@ final class PhoneConnectivityController: NSObject, WCSessionDelegate {
                 }
                 return [:]
 
-            case .requestRealtimeToken(let requestedSettings):
-                guard requestedSettings.selectedAuthMode == .openAIAPIKey else {
-                    return reply(.authUnavailable("ChatGPT/Codex credentials cannot authorize Realtime API sessions."))
-                }
-
-                guard let apiKey = try apiKeyProvider(), !apiKey.isEmpty else {
-                    return reply(.authUnavailable("Save an OpenAI API key on iPhone before starting from Apple Watch."))
-                }
-
-                let token = try await tokenService.createClientSecret(
-                    apiKey: apiKey,
-                    settings: requestedSettings,
-                    safetyIdentifier: safetyIdentifierStore.identifier()
-                )
-                return reply(.tokenResponse(token))
-
             case .reportConnectionState(let state):
                 await MainActor.run {
                     statusHandler("Watch: \(state.displayName)")
@@ -301,7 +281,7 @@ final class PhoneConnectivityController: NSObject, WCSessionDelegate {
                             watchKeyStatusHandler(hasKey)
                             statusHandler(hasKey ? "Watch: API key synced" : "Watch: API key deleted")
                         }
-                    case .keyStatusRequest, .requestConfiguration, .requestSettings, .requestRealtimeToken, .reportConnectionState:
+                    case .keyStatusRequest, .requestConfiguration, .requestSettings, .reportConnectionState:
                         Task { @MainActor in
                             errorHandler("Apple Watch returned an unexpected key-sync reply.")
                         }
