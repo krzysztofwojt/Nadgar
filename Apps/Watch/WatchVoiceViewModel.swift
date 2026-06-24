@@ -550,12 +550,13 @@ final class WatchVoiceViewModel: ObservableObject {
     }
 
     private func reusableTranscribingPlaceholderIndex() -> Int? {
-        guard let index = messages.indices.last else { return nil }
+        messages.indices.reversed().first { index in
+            let message = messages[index]
 
-        let message = messages[index]
-        guard message.role == .user, message.isPlaceholder else { return nil }
-
-        return isTranscribingPlaceholderText(message.text) ? index : nil
+            return message.role == .user &&
+                message.isPlaceholder &&
+                isTranscribingPlaceholderText(message.text)
+        }
     }
 
     private func isTranscribingPlaceholderText(_ text: String) -> Bool {
