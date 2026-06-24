@@ -8,10 +8,17 @@ struct WatchContentView: View {
     @State private var microphoneDragTranslation: CGSize = .zero
     @State private var activeDragTarget: PTTDragTarget?
     @State private var hasPressedMicrophone = false
+    @State private var isChatScrolledAwayFromBottom = false
+    @State private var isProgrammaticallyScrollingToBottom = false
+    @State private var suppressedScrolledAwayState = false
+    @State private var scrollToBottomSuppressionGeneration = 0
     private let bottomID = "chat-bottom"
+    private let chatScrollCoordinateSpace = "watch-chat-scroll"
     private let chatBottomReadableInset: CGFloat = 78
     private let chatAccentColor = Color(red: 0.07, green: 0.46, blue: 1)
     private let microphoneButtonSize = CGSize(width: 66, height: 44)
+    private let scrollToBottomButtonSize: CGFloat = 38
+    private let scrollToBottomButtonLeading: CGFloat = 10
     private let microphoneHomeTrailing: CGFloat = 10
     private let microphoneHomeBottom: CGFloat = 16
     private let dragTargetSize = CGSize(width: 66, height: 44)
@@ -83,7 +90,7 @@ struct WatchContentView: View {
             GeometryReader { geometry in
                 ZStack {
                     ScrollView {
-                        LazyVStack(spacing: 8) {
+                        VStack(spacing: 8) {
                             ForEach(viewModel.messages) { message in
                                 messageBubble(message)
                                     .id(message.id)
@@ -91,20 +98,34 @@ struct WatchContentView: View {
 
                             Color.clear
                                 .frame(height: chatBottomReadableInset)
+                                .background {
+                                    GeometryReader { bottomProxy in
+                                        Color.clear
+                                            .preference(
+                                                key: ChatBottomYPreferenceKey.self,
+                                                value: bottomProxy.frame(in: .named(chatScrollCoordinateSpace)).maxY
+                                            )
+                                    }
+                                }
                                 .id(bottomID)
                         }
                         .padding(.horizontal, 8)
                         .padding(.top, 6)
+                        .frame(minHeight: geometry.size.height, alignment: .bottom)
                     }
                     .scrollIndicators(.hidden)
+                    .coordinateSpace(name: chatScrollCoordinateSpace)
+                    .onPreferenceChange(ChatBottomYPreferenceKey.self) { bottomY in
+                        updateScrolledAwayState(bottomY: bottomY, viewportHeight: geometry.size.height)
+                    }
                     .onAppear {
-                        scrollToBottom(proxy)
+                        scrollToBottom(proxy, hideIndicatorDuringScroll: true)
                     }
                     .onChange(of: viewModel.messages) { _, _ in
-                        scrollToBottom(proxy)
+                        scrollToBottom(proxy, hideIndicatorDuringScroll: true)
                     }
                     .onChange(of: viewModel.pttState) { _, newState in
-                        scrollToBottom(proxy)
+                        scrollToBottom(proxy, hideIndicatorDuringScroll: true)
 
                         if newState != .recording {
                             resetMicrophoneDrag()
@@ -125,6 +146,15 @@ struct WatchContentView: View {
 
                     if isMicrophoneDragActive {
                         dragTargetsOverlay(in: geometry.size)
+                    }
+
+                    if shouldShowScrollToBottomButton {
+                        scrollToBottomButton {
+                            scrollToBottom(proxy, hideIndicatorDuringScroll: true)
+                        }
+                        .position(scrollToBottomButtonPosition(in: geometry.size))
+                        .transition(.opacity.combined(with: .scale(scale: 0.86)))
+                        .zIndex(2)
                     }
 
                     pushToTalkMicrophoneButton
@@ -197,6 +227,13 @@ struct WatchContentView: View {
             viewModel.pttState == .ready
     }
 
+    private var shouldShowScrollToBottomButton: Bool {
+        isChatScrolledAwayFromBottom &&
+            !viewModel.messages.isEmpty &&
+            !isMicrophoneDragActive &&
+            !viewModel.isPushToTalkRecording
+    }
+
     private func emptyPromptOverlay(in size: CGSize) -> some View {
         ZStack(alignment: .topLeading) {
             Text("To start,\npress and hold\nthe microphone\nbutton")
@@ -222,6 +259,21 @@ struct WatchContentView: View {
         .animation(.easeInOut(duration: 0.18), value: shouldShowEmptyPrompt)
         .allowsHitTesting(false)
         .accessibilityHidden(true)
+    }
+
+    private func scrollToBottomButton(action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: "arrow.down")
+                .font(.system(size: 17, weight: .bold))
+                .foregroundStyle(.white)
+                .frame(width: scrollToBottomButtonSize, height: scrollToBottomButtonSize)
+        }
+        .buttonStyle(.plain)
+        .pttGlassButton(tint: .white, isInteractive: true)
+        .shadow(color: .white.opacity(0.22), radius: 10, x: 0, y: 0)
+        .shadow(color: .black.opacity(0.28), radius: 8, x: 0, y: 3)
+        .contentShape(Circle())
+        .accessibilityLabel("Scroll to latest message")
     }
 
     private func dragTargetsOverlay(in size: CGSize) -> some View {
@@ -572,6 +624,13 @@ struct WatchContentView: View {
         )
     }
 
+    private func scrollToBottomButtonPosition(in size: CGSize) -> CGPoint {
+        CGPoint(
+            x: scrollToBottomButtonLeading + scrollToBottomButtonSize / 2,
+            y: microphoneHomePosition(in: size).y
+        )
+    }
+
     private func clampedMicrophonePosition(_ position: CGPoint, in size: CGSize) -> CGPoint {
         CGPoint(
             x: min(max(position.x, microphoneButtonSize.width / 2), size.width - microphoneButtonSize.width / 2),
@@ -627,10 +686,67 @@ struct WatchContentView: View {
         }
     }
 
-    private func scrollToBottom(_ proxy: ScrollViewProxy) {
+    private func scrollToBottom(_ proxy: ScrollViewProxy, hideIndicatorDuringScroll: Bool = false) {
+        let suppressionGeneration: Int?
+
+        if hideIndicatorDuringScroll {
+            isProgrammaticallyScrollingToBottom = true
+            isChatScrolledAwayFromBottom = false
+            suppressedScrolledAwayState = false
+            scrollToBottomSuppressionGeneration += 1
+            suppressionGeneration = scrollToBottomSuppressionGeneration
+        } else {
+            suppressionGeneration = nil
+        }
+
         withAnimation(.easeOut(duration: 0.18)) {
             proxy.scrollTo(bottomID, anchor: .bottom)
         }
+
+        if let suppressionGeneration {
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 320_000_000)
+                if scrollToBottomSuppressionGeneration == suppressionGeneration {
+                    isProgrammaticallyScrollingToBottom = false
+                    if suppressedScrolledAwayState {
+                        withAnimation(.easeInOut(duration: 0.16)) {
+                            isChatScrolledAwayFromBottom = true
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func updateScrolledAwayState(bottomY: CGFloat, viewportHeight: CGFloat) {
+        let isAway = bottomY > viewportHeight + 14
+        if isProgrammaticallyScrollingToBottom {
+            suppressedScrolledAwayState = isAway
+            if !isAway {
+                isProgrammaticallyScrollingToBottom = false
+                suppressedScrolledAwayState = false
+            }
+            if isChatScrolledAwayFromBottom {
+                withAnimation(.easeInOut(duration: 0.16)) {
+                    isChatScrolledAwayFromBottom = false
+                }
+            }
+            return
+        }
+
+        guard isChatScrolledAwayFromBottom != isAway else { return }
+
+        withAnimation(.easeInOut(duration: 0.16)) {
+            isChatScrolledAwayFromBottom = isAway
+        }
+    }
+}
+
+private struct ChatBottomYPreferenceKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
     }
 }
 
