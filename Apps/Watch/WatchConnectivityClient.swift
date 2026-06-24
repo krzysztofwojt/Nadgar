@@ -214,20 +214,26 @@ final class WatchConnectivityClient: NSObject, WCSessionDelegate {
     }
 
     private func enqueuePendingOpenURL(_ url: URL) {
+        if transferPendingOpenURL(url) {
+            return
+        }
+
         pendingOpenURLLock.lock()
         pendingOpenURLString = url.absoluteString
         pendingOpenURLLock.unlock()
-        transferPendingOpenURL(url)
     }
 
-    private func transferPendingOpenURL(_ url: URL) {
-        guard WCSession.isSupported() else { return }
+    private func transferPendingOpenURL(_ url: URL) -> Bool {
+        guard WCSession.isSupported() else { return false }
 
         let session = WCSession.default
-        guard session.activationState == .activated else { return }
-        guard let dictionary = try? WatchToPhoneMessage.openURL(url.absoluteString).envelope().dictionary() else { return }
+        guard session.activationState == .activated else { return false }
+        guard let dictionary = try? WatchToPhoneMessage.openURL(url.absoluteString).envelope().dictionary() else {
+            return false
+        }
 
         session.transferUserInfo(dictionary)
+        return true
     }
 
     private func dequeuePendingOpenURL() -> String? {
