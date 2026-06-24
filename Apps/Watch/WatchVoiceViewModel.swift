@@ -21,6 +21,7 @@ final class WatchVoiceViewModel: ObservableObject {
     @Published private(set) var errorMessage: String?
     @Published private(set) var messages: [ChatMessage]
     @Published private(set) var isPushToTalkRecording = false
+    @Published private(set) var isRecordingLocked = false
 
     var hasAPIKey: Bool {
         normalizedAPIKey != nil
@@ -29,6 +30,7 @@ final class WatchVoiceViewModel: ObservableObject {
     var canBeginRecording: Bool {
         hasAPIKey &&
             !isPushToTalkRecording &&
+            !isRecordingLocked &&
             !isRecordingStartPending &&
             (pttState == .ready || pttState == .failed)
     }
@@ -51,6 +53,8 @@ final class WatchVoiceViewModel: ObservableObject {
     private var isPushToTalkHoldActive = false
     private var isRecordingStartPending = false
     private var shouldFinishPushToTalkAfterStart = false
+    private var shouldLockPushToTalkAfterStart = false
+    private var shouldCancelPushToTalkAfterStart = false
     private var activeRecordingStartID: UUID?
     private var activeTurnID = UUID()
 
@@ -133,7 +137,10 @@ final class WatchVoiceViewModel: ObservableObject {
         isPushToTalkHoldActive = false
         isRecordingStartPending = false
         shouldFinishPushToTalkAfterStart = false
+        shouldLockPushToTalkAfterStart = false
+        shouldCancelPushToTalkAfterStart = false
         isPushToTalkRecording = false
+        isRecordingLocked = false
 
         if pttState == .recording {
             pttState = .ready
@@ -145,6 +152,7 @@ final class WatchVoiceViewModel: ObservableObject {
         isPushToTalkHoldActive = true
 
         guard canBeginRecording else {
+            isPushToTalkHoldActive = false
             Self.logger.info("ptt begin ignored state=\(self.pttState.rawValue, privacy: .public) hasKey=\(self.hasAPIKey, privacy: .public)")
             return
         }
@@ -152,7 +160,10 @@ final class WatchVoiceViewModel: ObservableObject {
         errorMessage = nil
         isRecordingStartPending = true
         shouldFinishPushToTalkAfterStart = false
+        shouldLockPushToTalkAfterStart = false
+        shouldCancelPushToTalkAfterStart = false
         isPushToTalkRecording = true
+        isRecordingLocked = false
         pttState = .recording
         let recordingStartID = UUID()
         activeRecordingStartID = recordingStartID
@@ -170,6 +181,19 @@ final class WatchVoiceViewModel: ObservableObject {
                 isRecordingStartPending = false
                 Self.logger.info("ptt recording active")
 
+                if shouldCancelPushToTalkAfterStart {
+                    shouldCancelPushToTalkAfterStart = false
+                    await cancelPushToTalkRecordingIfNeeded()
+                    return
+                }
+
+                if shouldLockPushToTalkAfterStart {
+                    shouldLockPushToTalkAfterStart = false
+                    isRecordingLocked = true
+                    Self.logger.info("ptt recording locked")
+                    return
+                }
+
                 if shouldFinishPushToTalkAfterStart || !isPushToTalkHoldActive {
                     shouldFinishPushToTalkAfterStart = false
                     await finishPushToTalkRecordingIfNeeded()
@@ -181,10 +205,19 @@ final class WatchVoiceViewModel: ObservableObject {
                 }
 
                 activeRecordingStartID = nil
+
+                if shouldCancelPushToTalkAfterStart {
+                    await cancelPushToTalkRecordingIfNeeded()
+                    return
+                }
+
                 isRecordingStartPending = false
                 shouldFinishPushToTalkAfterStart = false
+                shouldLockPushToTalkAfterStart = false
+                shouldCancelPushToTalkAfterStart = false
                 isPushToTalkRecording = false
                 isPushToTalkHoldActive = false
+                isRecordingLocked = false
                 recorder.cancel()
 
                 if (error as? WatchPTTRecorderError) == .recordingStartCancelled {
@@ -216,10 +249,67 @@ final class WatchVoiceViewModel: ObservableObject {
         }
     }
 
+    func lockPushToTalkRecording() {
+        guard isPushToTalkHoldActive || isPushToTalkRecording || isRecordingStartPending else { return }
+        isPushToTalkHoldActive = false
+
+        if isRecordingStartPending {
+            isRecordingLocked = true
+            shouldLockPushToTalkAfterStart = true
+            shouldFinishPushToTalkAfterStart = false
+            shouldCancelPushToTalkAfterStart = false
+            return
+        }
+
+        guard isPushToTalkRecording else { return }
+        isRecordingLocked = true
+        Self.logger.info("ptt recording locked")
+    }
+
+    func finishLockedPushToTalkRecording() {
+        guard isRecordingLocked else { return }
+        isRecordingLocked = false
+        isPushToTalkHoldActive = false
+
+        if isRecordingStartPending {
+            shouldFinishPushToTalkAfterStart = true
+            shouldLockPushToTalkAfterStart = false
+            shouldCancelPushToTalkAfterStart = false
+            return
+        }
+
+        Task {
+            await finishPushToTalkRecordingIfNeeded()
+        }
+    }
+
+    func cancelPushToTalkRecording() {
+        guard isPushToTalkHoldActive || isPushToTalkRecording || isRecordingStartPending || isRecordingLocked else { return }
+        isPushToTalkHoldActive = false
+        isRecordingLocked = false
+        shouldFinishPushToTalkAfterStart = false
+        shouldLockPushToTalkAfterStart = false
+
+        if isRecordingStartPending {
+            shouldCancelPushToTalkAfterStart = true
+            isPushToTalkRecording = false
+            pttState = .ready
+            recorder.cancel()
+            return
+        }
+
+        Task {
+            await cancelPushToTalkRecordingIfNeeded()
+        }
+    }
+
     private func finishPushToTalkRecordingIfNeeded() async {
         guard isPushToTalkRecording else { return }
         isPushToTalkRecording = false
+        isRecordingLocked = false
         shouldFinishPushToTalkAfterStart = false
+        shouldLockPushToTalkAfterStart = false
+        shouldCancelPushToTalkAfterStart = false
 
         guard let apiKey = normalizedAPIKey else {
             recorder.cancel()
@@ -279,6 +369,22 @@ final class WatchVoiceViewModel: ObservableObject {
             await prewarmRecorderIfPossible()
             Self.logger.error("ptt turn failed error=\(failureDescription, privacy: .public)")
         }
+    }
+
+    private func cancelPushToTalkRecordingIfNeeded() async {
+        activeTurnID = UUID()
+        recorder.cancel()
+        isPushToTalkHoldActive = false
+        isRecordingStartPending = false
+        shouldFinishPushToTalkAfterStart = false
+        shouldLockPushToTalkAfterStart = false
+        shouldCancelPushToTalkAfterStart = false
+        isPushToTalkRecording = false
+        isRecordingLocked = false
+        pttState = .ready
+        errorMessage = nil
+        await prewarmRecorderIfPossible()
+        Self.logger.info("ptt recording cancelled")
     }
 
     private func applyConfiguration(_ configuration: WatchConfiguration) {
@@ -368,7 +474,10 @@ final class WatchVoiceViewModel: ObservableObject {
         isPushToTalkHoldActive = false
         isRecordingStartPending = false
         shouldFinishPushToTalkAfterStart = false
+        shouldLockPushToTalkAfterStart = false
+        shouldCancelPushToTalkAfterStart = false
         isPushToTalkRecording = false
+        isRecordingLocked = false
         pttState = .ready
     }
 
