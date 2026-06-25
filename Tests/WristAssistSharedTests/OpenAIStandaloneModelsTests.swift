@@ -9,7 +9,7 @@ struct OpenAIStandaloneModelsTests {
             ChatMessage(id: UUID(), role: .assistant, text: "Hej", createdAt: Date(timeIntervalSince1970: 2))
         ]
         let request = OpenAIResponsesRequest(
-            model: "gpt-5.5",
+            model: StandalonePTTDefaults.assistantModel,
             instructions: "Answer briefly.",
             messages: messages
         )
@@ -17,7 +17,7 @@ struct OpenAIStandaloneModelsTests {
         let data = try JSONEncoder().encode(request)
         let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
 
-        #expect(object["model"] as? String == "gpt-5.5")
+        #expect(object["model"] as? String == StandalonePTTDefaults.assistantModel)
         #expect(object["instructions"] as? String == "Answer briefly.")
 
         let reasoning = try #require(object["reasoning"] as? [String: Any])

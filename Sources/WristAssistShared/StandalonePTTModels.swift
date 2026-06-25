@@ -108,7 +108,7 @@ public struct ChatMessage: Codable, Equatable, Identifiable, Sendable {
 }
 
 public enum StandalonePTTDefaults {
-    public static let assistantModel = "gpt-5.5"
+    public static let assistantModel = "gpt-5.4-nano"
     public static let transcriptionModel = "gpt-4o-mini-transcribe"
     public static let audioSampleRate = 24_000
 }
