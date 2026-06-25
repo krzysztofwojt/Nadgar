@@ -359,10 +359,14 @@ final class WatchVoiceViewModel: ObservableObject {
             assistantPlaceholderID = appendAssistantPlaceholder()
             Self.logger.info("ptt transcript appended characters=\(transcript.count, privacy: .public)")
 
-            let assistantResponse = try await assistantResponse(apiKey: apiKey, messages: messages)
+            let assistantResponse = try await streamAssistantResponse(
+                apiKey: apiKey,
+                messages: messages,
+                placeholderID: assistantPlaceholderID,
+                turnID: turnID
+            )
             guard activeTurnID == turnID else { return }
 
-            updateAssistantPlaceholder(id: assistantPlaceholderID, response: assistantResponse)
             pttState = .ready
             errorMessage = nil
             Self.logger.info("ptt assistant response appended characters=\(assistantResponse.text.count, privacy: .public) citations=\(assistantResponse.citations.count, privacy: .public)")
@@ -545,6 +549,71 @@ final class WatchVoiceViewModel: ObservableObject {
         )
     }
 
+    private func assistantResponseStream(
+        apiKey: String,
+        messages: [ChatMessage]
+    ) -> AsyncThrowingStream<OpenAIResponsesStreamUpdate, Error> {
+        if openAITestMode.isEnabled {
+            return openAITestMode.assistantResponseStream(
+                turnNumber: messages.filter { $0.role == .user && !$0.isPlaceholder }.count
+            )
+        }
+
+        return responsesClient.streamedResponse(
+            apiKey: apiKey,
+            settings: settings,
+            messages: messages
+        )
+    }
+
+    private func streamAssistantResponse(
+        apiKey: String,
+        messages: [ChatMessage],
+        placeholderID: UUID?,
+        turnID: UUID
+    ) async throws -> OpenAIAssistantResponse {
+        var finalResponse: OpenAIAssistantResponse?
+        var streamedText = ""
+
+        for try await update in assistantResponseStream(apiKey: apiKey, messages: messages) {
+            guard activeTurnID == turnID else {
+                throw CancellationError()
+            }
+
+            switch update {
+            case .textDelta(let delta):
+                streamedText += delta
+                appendAssistantTextDelta(id: placeholderID, delta: delta)
+            case .completed(let response):
+                let completedText = response.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !completedText.isEmpty {
+                    updateAssistantPlaceholder(id: placeholderID, response: response)
+                    finalResponse = response
+                } else if !streamedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Self.logger.info("ptt stream completed without final text; keeping streamed text")
+                }
+            }
+        }
+
+        guard let finalResponse else {
+            let trimmedText = streamedText.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmedText.isEmpty else {
+                Self.logger.error("ptt stream ended without text or completion; falling back to full response")
+                let fallbackResponse = try await assistantResponse(apiKey: apiKey, messages: messages)
+                updateAssistantPlaceholder(id: placeholderID, response: fallbackResponse)
+                Self.logger.info("ptt full response fallback succeeded characters=\(fallbackResponse.text.count, privacy: .public) citations=\(fallbackResponse.citations.count, privacy: .public)")
+                return fallbackResponse
+            }
+
+            let response = OpenAIAssistantResponse(text: trimmedText)
+            updateAssistantPlaceholder(id: placeholderID, response: response)
+            Self.logger.info("ptt stream ended without completion; using streamed text characters=\(trimmedText.count, privacy: .public)")
+            return response
+        }
+
+        return finalResponse
+    }
+
     private func reserveTranscribingPlaceholder() -> TranscribingPlaceholderReservation {
         if let reusableIndex = reusableTranscribingPlaceholderIndex() {
             let previousMessage = messages[reusableIndex]
@@ -660,15 +729,43 @@ final class WatchVoiceViewModel: ObservableObject {
         }
     }
 
+    private func appendAssistantTextDelta(id: UUID?, delta: String) {
+        guard !delta.isEmpty else { return }
+
+        guard let id else {
+            messages.append(ChatMessage(role: .assistant, text: delta))
+            return
+        }
+
+        updateMessage(id: id) { message in
+            if message.isPlaceholder {
+                message.text = ""
+                message.citations = []
+                message.isPlaceholder = false
+            }
+            message.text += delta
+        } fallback: {
+            self.messages.append(ChatMessage(id: id, role: .assistant, text: delta))
+        }
+    }
+
     private func failAssistantPlaceholder(id: UUID?, errorDescription: String) {
         guard let id else { return }
 
         updateMessage(id: id) { message in
-            message.text = failurePlaceholderText(
+            let failureText = failurePlaceholderText(
                 prefix: Self.assistantFailedPlaceholderText,
                 errorDescription: errorDescription
             )
-            message.isPlaceholder = true
+
+            if message.role == .assistant,
+               !message.isPlaceholder,
+               !message.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                message.text += "\n\n\(failureText)"
+            } else {
+                message.text = failureText
+                message.isPlaceholder = true
+            }
         }
     }
 
@@ -772,6 +869,29 @@ struct WatchOpenAITestMode: Equatable {
         OpenAIMockResponses.richMarkdownCitationResponse(turnNumber: turnNumber)
     }
 
+    func assistantResponseStream(turnNumber: Int) -> AsyncThrowingStream<OpenAIResponsesStreamUpdate, Error> {
+        let response = assistantResponse(turnNumber: turnNumber)
+
+        return AsyncThrowingStream { continuation in
+            let task = Task {
+                for chunk in response.text.mockStreamChunks(maxLength: 42) {
+                    guard !Task.isCancelled else { return }
+                    try? await Task.sleep(nanoseconds: 85_000_000)
+                    continuation.yield(.textDelta(chunk))
+                }
+
+                guard !Task.isCancelled else { return }
+                try? await Task.sleep(nanoseconds: 120_000_000)
+                continuation.yield(.completed(response))
+                continuation.finish()
+            }
+
+            continuation.onTermination = { _ in
+                task.cancel()
+            }
+        }
+    }
+
     func initialMessages() -> [ChatMessage] {
         guard seedsCitationChat else { return [] }
 
@@ -812,6 +932,23 @@ struct WatchOpenAITestMode: Equatable {
         }
 
         return Int(value)
+    }
+}
+
+private extension String {
+    func mockStreamChunks(maxLength: Int) -> [String] {
+        guard count > maxLength else { return [self] }
+
+        var chunks: [String] = []
+        var start = startIndex
+
+        while start < endIndex {
+            let end = index(start, offsetBy: maxLength, limitedBy: endIndex) ?? endIndex
+            chunks.append(String(self[start..<end]))
+            start = end
+        }
+
+        return chunks
     }
 }
 

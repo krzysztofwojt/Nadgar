@@ -41,6 +41,35 @@ struct OpenAIStandaloneModelsTests {
         #expect(input[1]["content"] as? String == "Hej")
     }
 
+    @Test func responsesRequestOmitsStreamByDefault() throws {
+        let request = OpenAIResponsesRequest(
+            instructions: nil,
+            messages: [
+                ChatMessage(role: .user, text: "Hej")
+            ]
+        )
+
+        let data = try JSONEncoder().encode(request)
+        let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+
+        #expect(object["stream"] == nil)
+    }
+
+    @Test func streamingResponsesRequestIncludesStreamWhenEnabled() throws {
+        let request = OpenAIResponsesRequest(
+            instructions: nil,
+            messages: [
+                ChatMessage(role: .user, text: "Hej")
+            ],
+            stream: true
+        )
+
+        let data = try JSONEncoder().encode(request)
+        let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+
+        #expect(object["stream"] as? Bool == true)
+    }
+
     @Test func responsesResponsePrefersOutputText() throws {
         let data = #"{"output_text":"Gotowe.","output":[]}"#.data(using: .utf8)!
         let decoded = try JSONDecoder().decode(OpenAIResponsesResponse.self, from: data)
@@ -88,6 +117,59 @@ struct OpenAIStandaloneModelsTests {
         let decoded = try JSONDecoder().decode(OpenAIResponsesResponse.self, from: data)
 
         #expect(decoded.assistantText == "Gotowe.")
+    }
+
+    @Test func responsesResponseReadsSingleObjectContent() throws {
+        let data = """
+        {
+          "output": [
+            {
+              "type": "message",
+              "content": {"type": "output_text", "text": "Single content object."}
+            }
+          ]
+        }
+        """.data(using: .utf8)!
+
+        let decoded = try JSONDecoder().decode(OpenAIResponsesResponse.self, from: data)
+
+        #expect(decoded.assistantText == "Single content object.")
+    }
+
+    @Test func responsesResponseReadsStringContent() throws {
+        let data = """
+        {
+          "output": [
+            {
+              "type": "message",
+              "content": "String content."
+            }
+          ]
+        }
+        """.data(using: .utf8)!
+
+        let decoded = try JSONDecoder().decode(OpenAIResponsesResponse.self, from: data)
+
+        #expect(decoded.assistantText == "String content.")
+    }
+
+    @Test func responsesResponseReadsNestedTextValue() throws {
+        let data = """
+        {
+          "output": [
+            {
+              "type": "message",
+              "content": [
+                {"type": "output_text", "text": {"value": "Nested text value."}}
+              ]
+            }
+          ]
+        }
+        """.data(using: .utf8)!
+
+        let decoded = try JSONDecoder().decode(OpenAIResponsesResponse.self, from: data)
+
+        #expect(decoded.assistantText == "Nested text value.")
     }
 
     @Test func responsesResponseExtractsWebCitations() throws {
@@ -256,9 +338,218 @@ struct OpenAIStandaloneModelsTests {
         #expect(decoded.citations.isEmpty)
     }
 
+    @Test func responsesSSEParserEmitsTextDeltasInOrder() throws {
+        var parser = OpenAIResponsesSSEParser()
+        var updates: [OpenAIResponsesStreamUpdate] = []
+
+        updates += try parser.parse(line: #"data: {"type":"response.output_text.delta","delta":"Pierwsza "}"#)
+        updates += try parser.parse(line: "")
+        updates += try parser.parse(line: #"data: {"type":"response.output_text.delta","delta":"druga."}"#)
+        updates += try parser.parse(line: "")
+
+        #expect(updates == [
+            .textDelta("Pierwsza "),
+            .textDelta("druga.")
+        ])
+    }
+
+    @Test func responsesSSEParserUsesEventLinesAsBoundariesWhenBlankLinesAreMissing() throws {
+        var parser = OpenAIResponsesSSEParser()
+        var updates: [OpenAIResponsesStreamUpdate] = []
+
+        updates += try parser.parse(line: "event: response.created")
+        updates += try parser.parse(line: #"data: {"type":"response.created","response":{"status":"in_progress"}}"#)
+        updates += try parser.parse(line: "event: response.output_text.delta")
+        updates += try parser.parse(line: #"data: {"type":"response.output_text.delta","delta":"Pierwsza "}"#)
+        updates += try parser.parse(line: "event: response.output_text.delta")
+        updates += try parser.parse(line: #"data: {"type":"response.output_text.delta","delta":"druga."}"#)
+        updates += try parser.parse(line: "event: response.completed")
+        updates += try parser.parse(line: #"data: {"type":"response.completed","response":{"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"Pierwsza druga."}]}]}}"#)
+        updates += try parser.finish()
+
+        #expect(updates == [
+            .textDelta("Pierwsza "),
+            .textDelta("druga."),
+            .completed(OpenAIAssistantResponse(text: "Pierwsza druga."))
+        ])
+    }
+
+    @Test func responsesSSEParserReportsEventSummaries() throws {
+        let recorder = StreamSummaryRecorder()
+        var parser = OpenAIResponsesSSEParser { summary in
+            recorder.append(summary)
+        }
+        var updates: [OpenAIResponsesStreamUpdate] = []
+
+        updates += try parser.parse(line: #"data: {"type":"response.completed","response":{"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"Done."}]}]}}"#)
+        updates += try parser.parse(line: "")
+
+        #expect(updates == [
+            .completed(OpenAIAssistantResponse(text: "Done."))
+        ])
+        let summary = try #require(recorder.summaries.first)
+        #expect(summary.type == "response.completed")
+        #expect(summary.payloadByteCount > 0)
+        #expect(summary.responseStatus == "completed")
+        #expect(summary.outputItemTypes == ["message"])
+        #expect(summary.textLength == 5)
+    }
+
+    @Test func responsesSSEParserUsesOutputTextDoneWhenNoDeltasArrived() throws {
+        var parser = OpenAIResponsesSSEParser()
+        var updates: [OpenAIResponsesStreamUpdate] = []
+
+        updates += try parser.parse(line: #"data: {"type":"response.output_text.done","text":"Final text without deltas."}"#)
+        updates += try parser.parse(line: "")
+
+        #expect(updates == [
+            .textDelta("Final text without deltas.")
+        ])
+    }
+
+    @Test func responsesSSEParserIgnoresOutputTextDoneAfterDeltas() throws {
+        var parser = OpenAIResponsesSSEParser()
+        var updates: [OpenAIResponsesStreamUpdate] = []
+
+        updates += try parser.parse(line: #"data: {"type":"response.output_text.delta","delta":"Final "}"#)
+        updates += try parser.parse(line: "")
+        updates += try parser.parse(line: #"data: {"type":"response.output_text.done","text":"Final text."}"#)
+        updates += try parser.parse(line: "")
+        updates += try parser.parse(line: #"data: {"type":"response.output_text.delta","delta":"text."}"#)
+        updates += try parser.parse(line: "")
+
+        #expect(updates == [
+            .textDelta("Final "),
+            .textDelta("text.")
+        ])
+    }
+
+    @Test func responsesSSEParserEmitsCompletedResponseWithCitations() throws {
+        var parser = OpenAIResponsesSSEParser()
+        var updates: [OpenAIResponsesStreamUpdate] = []
+
+        updates += try parser.parse(line: #"data: {"type":"response.completed","response":{"output":[{"type":"web_search_call","status":"completed"},{"type":"message","content":[{"type":"output_text","text":"OpenAI News","annotations":[{"type":"url_citation","start_index":0,"end_index":6,"url":"https://openai.com/news","title":"OpenAI News"}]}]}]}}"#)
+        updates += try parser.parse(line: "")
+
+        let response = OpenAIAssistantResponse(
+            text: "OpenAI News",
+            citations: [
+                ChatCitation(
+                    startIndex: 0,
+                    endIndex: 6,
+                    url: "https://openai.com/news",
+                    title: "OpenAI News"
+                )
+            ],
+            usedWebSearch: true
+        )
+        #expect(updates == [.completed(response)])
+    }
+
+    @Test func responsesSSEParserIgnoresUnneededEventsWithUnexpectedPayloads() throws {
+        var parser = OpenAIResponsesSSEParser()
+        var updates: [OpenAIResponsesStreamUpdate] = []
+
+        updates += try parser.parse(line: #"data: {"type":"response.in_progress","response":{"output":[{"type":"message","content":"unexpected-string"}]}}"#)
+        updates += try parser.parse(line: "")
+        updates += try parser.parse(line: #"data: {"type":"response.output_text.annotation.added","annotation":{"type":"url_citation","start_index":0,"end_index":4,"url":"https://example.com"}}"#)
+        updates += try parser.parse(line: "")
+
+        #expect(updates.isEmpty)
+    }
+
+    @Test func responsesSSEParserIgnoresMalformedUnneededControlEvents() throws {
+        var parser = OpenAIResponsesSSEParser()
+        var updates: [OpenAIResponsesStreamUpdate] = []
+
+        updates += try parser.parse(line: #"data: {"type":"response.created","response":{"id":"resp_123","status":"in_progress","frequency_penalty""#)
+        updates += try parser.parse(line: "")
+
+        #expect(updates.isEmpty)
+    }
+
+    @Test func responsesSSEParserIgnoresEmptyDataEvents() throws {
+        var parser = OpenAIResponsesSSEParser()
+        var updates: [OpenAIResponsesStreamUpdate] = []
+
+        updates += try parser.parse(line: "data: ")
+        updates += try parser.parse(line: "")
+
+        #expect(updates.isEmpty)
+    }
+
+    @Test func responsesSSEParserToleratesUnexpectedCompletedOutputItems() throws {
+        var parser = OpenAIResponsesSSEParser()
+        var updates: [OpenAIResponsesStreamUpdate] = []
+
+        updates += try parser.parse(line: #"data: {"type":"response.completed","response":{"output_text":"Final text.","output":[{"type":"message","content":"unexpected-string"}]}}"#)
+        updates += try parser.parse(line: "")
+
+        #expect(updates == [
+            .completed(OpenAIAssistantResponse(text: "Final text."))
+        ])
+    }
+
+    @Test func responsesSSEParserMapsFailedResponses() throws {
+        var parser = OpenAIResponsesSSEParser()
+        var caughtError: OpenAIResponsesStreamError?
+
+        do {
+            _ = try parser.parse(line: #"data: {"type":"response.failed","response":{"error":{"message":"Search failed."}}}"#)
+            _ = try parser.parse(line: "")
+        } catch let error as OpenAIResponsesStreamError {
+            caughtError = error
+        }
+
+        #expect(caughtError == .openAIError("Search failed."))
+    }
+
+    @Test func responsesSSEParserMapsIncompleteResponses() throws {
+        var parser = OpenAIResponsesSSEParser()
+        var caughtError: OpenAIResponsesStreamError?
+
+        do {
+            _ = try parser.parse(line: #"data: {"type":"response.incomplete","response":{"incomplete_details":{"reason":"max_output_tokens"}}}"#)
+            _ = try parser.parse(line: "")
+        } catch let error as OpenAIResponsesStreamError {
+            caughtError = error
+        }
+
+        #expect(caughtError == .openAIError("OpenAI response was incomplete: max_output_tokens."))
+    }
+
+    @Test func responsesSSEParserMapsErrorEvents() throws {
+        var parser = OpenAIResponsesSSEParser()
+        var caughtError: OpenAIResponsesStreamError?
+
+        do {
+            _ = try parser.parse(line: #"data: {"type":"error","message":"Bad request."}"#)
+            _ = try parser.parse(line: "")
+        } catch let error as OpenAIResponsesStreamError {
+            caughtError = error
+        }
+
+        #expect(caughtError == .openAIError("Bad request."))
+    }
+
     private func substring(in text: String, citation: ChatCitation) throws -> String {
         let start = text.index(text.startIndex, offsetBy: citation.startIndex)
         let end = text.index(text.startIndex, offsetBy: citation.endIndex)
         return String(text[start..<end])
+    }
+}
+
+private final class StreamSummaryRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [OpenAIResponsesStreamEventSummary] = []
+
+    var summaries: [OpenAIResponsesStreamEventSummary] {
+        lock.withLock { storage }
+    }
+
+    func append(_ summary: OpenAIResponsesStreamEventSummary) {
+        lock.withLock {
+            storage.append(summary)
+        }
     }
 }

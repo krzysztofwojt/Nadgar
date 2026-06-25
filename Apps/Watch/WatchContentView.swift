@@ -12,6 +12,7 @@ struct WatchContentView: View {
     @State private var isProgrammaticallyScrollingToBottom = false
     @State private var suppressedScrolledAwayState = false
     @State private var scrollToBottomSuppressionGeneration = 0
+    @State private var assistantResponseTopFocusID: UUID?
     @State private var selectedCitation: ChatCitation?
     @State private var citationOpenFailure: String?
     private let bottomID = "chat-bottom"
@@ -112,6 +113,17 @@ struct WatchContentView: View {
                         VStack(spacing: 8) {
                             ForEach(viewModel.messages) { message in
                                 messageBubble(message)
+                                    .background {
+                                        if message.id == assistantResponseTopFocusID {
+                                            GeometryReader { messageProxy in
+                                                Color.clear
+                                                    .preference(
+                                                        key: AssistantResponseFramePreferenceKey.self,
+                                                        value: messageProxy.frame(in: .named(chatScrollCoordinateSpace))
+                                                    )
+                                            }
+                                        }
+                                    }
                                     .id(message.id)
                             }
 
@@ -138,6 +150,9 @@ struct WatchContentView: View {
                     .onPreferenceChange(ChatBottomYPreferenceKey.self) { bottomY in
                         updateScrolledAwayState(bottomY: bottomY, viewportHeight: geometry.size.height)
                     }
+                    .onPreferenceChange(AssistantResponseFramePreferenceKey.self) { frame in
+                        followAssistantResponseIfNeeded(frame: frame, proxy: proxy)
+                    }
                     .onAppear {
                         scrollToBottom(proxy, hideIndicatorDuringScroll: true)
                     }
@@ -145,6 +160,10 @@ struct WatchContentView: View {
                         scrollForMessageChange(from: oldMessages, to: newMessages, proxy: proxy)
                     }
                     .onChange(of: viewModel.pttState) { _, newState in
+                        if newState == .recording {
+                            assistantResponseTopFocusID = nil
+                        }
+
                         if newState != .ready {
                             scrollToBottom(proxy, hideIndicatorDuringScroll: true)
                         }
@@ -172,6 +191,7 @@ struct WatchContentView: View {
 
                     if shouldShowScrollToBottomButton {
                         scrollToBottomButton {
+                            assistantResponseTopFocusID = nil
                             scrollToBottom(proxy, hideIndicatorDuringScroll: true)
                         }
                         .position(scrollToBottomButtonPosition(in: geometry.size))
@@ -1509,12 +1529,38 @@ struct WatchContentView: View {
         to newMessages: [ChatMessage],
         proxy: ScrollViewProxy
     ) {
-        if let assistantMessageID = assistantResponseReadyID(from: oldMessages, to: newMessages) {
-            scrollToMessage(assistantMessageID, proxy: proxy, anchor: .top)
+        if let assistantPlaceholderID = assistantPlaceholderAddedID(from: oldMessages, to: newMessages) {
+            assistantResponseTopFocusID = assistantPlaceholderID
+            scrollToBottom(proxy, hideIndicatorDuringScroll: true)
             return
         }
 
+        if let assistantMessageID = assistantResponseReadyID(from: oldMessages, to: newMessages) {
+            assistantResponseTopFocusID = assistantMessageID
+            scrollToBottom(proxy, hideIndicatorDuringScroll: true)
+            return
+        }
+
+        if isAssistantResponseStreamingUpdate(from: oldMessages, to: newMessages) {
+            return
+        }
+
+        if newMessages.last?.role != .assistant {
+            assistantResponseTopFocusID = nil
+        }
+
         scrollToBottom(proxy, hideIndicatorDuringScroll: true)
+    }
+
+    private func assistantPlaceholderAddedID(from oldMessages: [ChatMessage], to newMessages: [ChatMessage]) -> UUID? {
+        guard newMessages.count > oldMessages.count else { return nil }
+
+        for newMessage in newMessages.reversed() where newMessage.role == .assistant && newMessage.isPlaceholder {
+            guard !oldMessages.contains(where: { $0.id == newMessage.id }) else { continue }
+            return newMessage.id
+        }
+
+        return nil
     }
 
     private func assistantResponseReadyID(from oldMessages: [ChatMessage], to newMessages: [ChatMessage]) -> UUID? {
@@ -1535,10 +1581,42 @@ struct WatchContentView: View {
         return nil
     }
 
-    private func scrollToMessage(_ id: UUID, proxy: ScrollViewProxy, anchor: UnitPoint) {
-        withAnimation(.easeOut(duration: 0.18)) {
-            proxy.scrollTo(id, anchor: anchor)
+    private func isAssistantResponseStreamingUpdate(from oldMessages: [ChatMessage], to newMessages: [ChatMessage]) -> Bool {
+        guard oldMessages.count == newMessages.count else { return false }
+
+        let changedMessages = zip(oldMessages, newMessages).filter { oldMessage, newMessage in
+            oldMessage != newMessage
         }
+        guard changedMessages.count == 1,
+              let (oldMessage, newMessage) = changedMessages.first,
+              oldMessage.id == newMessage.id,
+              oldMessage.role == .assistant,
+              newMessage.role == .assistant,
+              !oldMessage.isPlaceholder,
+              !newMessage.isPlaceholder
+        else {
+            return false
+        }
+
+        return newMessage.text.hasPrefix(oldMessage.text) ||
+            oldMessage.text.hasPrefix(newMessage.text) ||
+            oldMessage.citations != newMessage.citations
+    }
+
+    private func followAssistantResponseIfNeeded(frame: CGRect?, proxy: ScrollViewProxy) {
+        guard let frame,
+              let assistantResponseTopFocusID,
+              let latestMessage = viewModel.messages.last,
+              latestMessage.id == assistantResponseTopFocusID,
+              latestMessage.role == .assistant
+        else {
+            return
+        }
+
+        let targetTopY = chatTopReadableInset + 4
+        guard frame.minY > targetTopY + 3 else { return }
+
+        scrollToBottom(proxy, hideIndicatorDuringScroll: true)
     }
 
     private func scrollToBottom(_ proxy: ScrollViewProxy, hideIndicatorDuringScroll: Bool = false) {
@@ -1602,6 +1680,14 @@ private struct ChatBottomYPreferenceKey: PreferenceKey {
 
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = nextValue()
+    }
+}
+
+private struct AssistantResponseFramePreferenceKey: PreferenceKey {
+    static var defaultValue: CGRect?
+
+    static func reduce(value: inout CGRect?, nextValue: () -> CGRect?) {
+        value = nextValue() ?? value
     }
 }
 
