@@ -395,6 +395,18 @@ struct OpenAIStandaloneModelsTests {
         #expect(summary.textLength == 5)
     }
 
+    @Test func responsesSSEParserUsesTopLevelEventTypeWhenNestedTypeAppearsFirst() throws {
+        var parser = OpenAIResponsesSSEParser()
+        var updates: [OpenAIResponsesStreamUpdate] = []
+
+        updates += try parser.parse(line: #"data: {"response":{"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"Done."}]}]},"type":"response.completed"}"#)
+        updates += try parser.parse(line: "")
+
+        #expect(updates == [
+            .completed(OpenAIAssistantResponse(text: "Done."))
+        ])
+    }
+
     @Test func responsesSSEParserUsesOutputTextDoneWhenNoDeltasArrived() throws {
         var parser = OpenAIResponsesSSEParser()
         var updates: [OpenAIResponsesStreamUpdate] = []

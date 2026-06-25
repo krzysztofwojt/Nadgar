@@ -306,17 +306,16 @@ private struct OpenAIResponsesStreamEvent {
             throw OpenAIResponsesStreamError.invalidEvent("OpenAI returned a non-UTF-8 streaming event.")
         }
 
-        guard let type = Self.eventType(in: rawPayload) else {
-            throw OpenAIResponsesStreamError.invalidEvent("OpenAI returned a streaming event without a type: \(Self.payloadSnippet(from: data))")
-        }
-
-        self.type = type
-
         let decodedObject: Any?
         do {
             decodedObject = try JSONSerialization.jsonObject(with: data)
         } catch {
+            guard let type = Self.eventType(in: rawPayload) else {
+                throw OpenAIResponsesStreamError.invalidEvent("OpenAI returned a streaming event without a type: \(Self.payloadSnippet(from: data))")
+            }
+
             guard Self.requiresPayload(for: type) else {
+                self.type = type
                 self.payload = nil
                 self.summary = OpenAIResponsesStreamEventSummary(type: type, payloadByteCount: data.count)
                 return
@@ -326,14 +325,25 @@ private struct OpenAIResponsesStreamEvent {
         }
 
         guard let payload = decodedObject as? [String: Any] else {
+            guard let type = Self.eventType(in: rawPayload) else {
+                throw OpenAIResponsesStreamError.invalidEvent("OpenAI returned a streaming event without a type: \(Self.payloadSnippet(from: data))")
+            }
+
             guard !Self.requiresPayload(for: type) else {
                 throw OpenAIResponsesStreamError.invalidEvent("OpenAI returned a streaming event in an unexpected format: \(Self.payloadSnippet(from: data))")
             }
 
+            self.type = type
             self.payload = nil
             self.summary = OpenAIResponsesStreamEventSummary(type: type, payloadByteCount: data.count)
             return
         }
+
+        guard let type = payload["type"] as? String, !type.isEmpty else {
+            throw OpenAIResponsesStreamError.invalidEvent("OpenAI returned a streaming event without a type: \(Self.payloadSnippet(from: data))")
+        }
+
+        self.type = type
 
         guard !Self.requiresPayload(for: type) || !payload.isEmpty else {
             throw OpenAIResponsesStreamError.invalidEvent("OpenAI returned a streaming event in an unexpected format: \(Self.payloadSnippet(from: data))")
