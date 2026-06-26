@@ -10,6 +10,15 @@ final class SettingsViewModel: ObservableObject {
     @Published var transcriptionModel: String {
         didSet { refreshUnsavedSettingsChanges() }
     }
+    @Published var voice: String {
+        didSet { refreshUnsavedSettingsChanges() }
+    }
+    @Published var isAutoReadEnabled: Bool {
+        didSet { refreshUnsavedSettingsChanges() }
+    }
+    @Published var shouldIgnoreSilentModeForAutoRead: Bool {
+        didSet { refreshUnsavedSettingsChanges() }
+    }
     @Published var instructions: String {
         didSet { refreshUnsavedSettingsChanges() }
     }
@@ -53,8 +62,14 @@ final class SettingsViewModel: ObservableObject {
         self.settings = storedSettings
         self.assistantModel = storedSettings.model
         self.transcriptionModel = storedSettings.transcriptionModel
+        self.voice = storedSettings.voice
+        self.isAutoReadEnabled = storedSettings.isAutoReadEnabled
+        self.shouldIgnoreSilentModeForAutoRead = storedSettings.shouldIgnoreSilentModeForAutoRead
         self.instructions = storedSettings.instructions
         self.lastError = initialError
+        if !savedAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            pendingWatchKeyDeletion = false
+        }
         refreshUnsavedSettingsChanges()
     }
 
@@ -181,6 +196,20 @@ final class SettingsViewModel: ObservableObject {
         persistSettings(draftSettings(hasAPIKey: settings.hasAPIKey), syncDraft: true)
     }
 
+    func setAutoReadEnabled(_ enabled: Bool) {
+        guard isAutoReadEnabled != enabled else { return }
+
+        isAutoReadEnabled = enabled
+        persistAutoReadSettings(isEnabled: enabled)
+    }
+
+    func setShouldIgnoreSilentModeForAutoRead(_ enabled: Bool) {
+        guard shouldIgnoreSilentModeForAutoRead != enabled else { return }
+
+        shouldIgnoreSilentModeForAutoRead = enabled
+        persistAutoReadSettings(shouldIgnoreSilentMode: enabled)
+    }
+
     func sendSettingsToWatch() {
         connectivity?.sendSettings(currentSettings())
     }
@@ -209,12 +238,33 @@ final class SettingsViewModel: ObservableObject {
         persistSettings(currentSettings(hasAPIKey: hasAPIKey), syncDraft: false)
     }
 
+    private func persistAutoReadSettings(
+        isEnabled: Bool? = nil,
+        shouldIgnoreSilentMode: Bool? = nil
+    ) {
+        let newSettings = ProviderSettings(
+            selectedAuthMode: settings.selectedAuthMode,
+            hasAPIKey: settings.hasAPIKey,
+            model: settings.model,
+            transcriptionModel: settings.transcriptionModel,
+            voice: settings.voice,
+            instructions: settings.instructions,
+            isAutoReadEnabled: isEnabled ?? settings.isAutoReadEnabled,
+            shouldIgnoreSilentModeForAutoRead: shouldIgnoreSilentMode ?? settings.shouldIgnoreSilentModeForAutoRead,
+            ttsModel: settings.ttsModel
+        )
+        persistSettings(newSettings, syncDraft: false)
+    }
+
     private func persistSettings(_ newSettings: ProviderSettings, syncDraft: Bool) {
         settings = newSettings
 
         if syncDraft {
             assistantModel = settings.model
             transcriptionModel = settings.transcriptionModel
+            voice = settings.voice
+            isAutoReadEnabled = settings.isAutoReadEnabled
+            shouldIgnoreSilentModeForAutoRead = settings.shouldIgnoreSilentModeForAutoRead
             instructions = settings.instructions
         }
 
@@ -233,8 +283,11 @@ final class SettingsViewModel: ObservableObject {
             hasAPIKey: hasAPIKey,
             model: assistantModel,
             transcriptionModel: transcriptionModel,
-            voice: settings.voice,
-            instructions: instructions
+            voice: voice,
+            instructions: instructions,
+            isAutoReadEnabled: isAutoReadEnabled,
+            shouldIgnoreSilentModeForAutoRead: shouldIgnoreSilentModeForAutoRead,
+            ttsModel: ProviderSettings.defaultTTSModel
         )
     }
 
@@ -249,7 +302,10 @@ final class SettingsViewModel: ObservableObject {
             model: settings.model,
             transcriptionModel: settings.transcriptionModel,
             voice: settings.voice,
-            instructions: settings.instructions
+            instructions: settings.instructions,
+            isAutoReadEnabled: settings.isAutoReadEnabled,
+            shouldIgnoreSilentModeForAutoRead: settings.shouldIgnoreSilentModeForAutoRead,
+            ttsModel: settings.ttsModel
         )
     }
 
@@ -288,14 +344,24 @@ final class SettingsViewModel: ObservableObject {
     private func handleWatchKeyStatus(hasKey: Bool) {
         guard pendingWatchKeyDeletion else { return }
 
-        if !hasKey {
-            pendingWatchKeyDeletion = false
-            watchStatus = "Watch: API key deleted"
+        guard !hasKey else {
+            watchStatus = "Open WristAssist on Apple Watch to finish deleting the key there."
             lastError = nil
+            return
         }
+
+        pendingWatchKeyDeletion = false
+        watchStatus = "Watch: API key deleted"
+        lastError = nil
     }
 
     private func applyWatchStatus(_ status: String) {
+        if pendingWatchKeyDeletion && status == "Watch: API key synced" {
+            watchStatus = "Open WristAssist on Apple Watch to finish deleting the key there."
+            lastError = nil
+            return
+        }
+
         watchStatus = status
 
         if status == "Watch: API key synced" ||

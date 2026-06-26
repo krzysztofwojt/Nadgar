@@ -183,16 +183,16 @@ final class PhoneConnectivityController: NSObject, WCSessionDelegate {
                 return reply(.settingsChanged(settings))
 
             case .keyStatusRequest:
+                if let apiKey = try apiKeyProvider(),
+                   !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    return reply(.syncAPIKey(apiKey))
+                }
+
                 let hasPendingWatchDeletion = await MainActor.run {
                     pendingWatchKeyDeletionProvider()
                 }
                 if hasPendingWatchDeletion {
                     return reply(.deleteAPIKey)
-                }
-
-                if let apiKey = try apiKeyProvider(),
-                   !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    return reply(.syncAPIKey(apiKey))
                 }
 
                 return reply(.keyStatusResponse(hasKey: false))
@@ -320,17 +320,17 @@ final class PhoneConnectivityController: NSObject, WCSessionDelegate {
 
         Task {
             do {
+                if let apiKey = try apiKeyProvider(),
+                   !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    syncAPIKeyToWatch(apiKey)
+                    return
+                }
+
                 let hasPendingWatchDeletion = await MainActor.run {
                     pendingWatchKeyDeletionProvider()
                 }
                 if hasPendingWatchDeletion {
                     sendDeleteAPIKeyToWatch()
-                    return
-                }
-
-                if let apiKey = try apiKeyProvider(),
-                   !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    syncAPIKeyToWatch(apiKey)
                     return
                 }
 

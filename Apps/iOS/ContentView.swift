@@ -74,6 +74,19 @@ struct ContentView: View {
                         }
                     }
 
+                    Toggle("Read responses aloud", isOn: autoReadBinding)
+
+                    if viewModel.isAutoReadEnabled {
+                        Toggle("Ignore Silent Mode", isOn: ignoreSilentModeBinding)
+                            .transition(.opacity.combined(with: .move(edge: .top)))
+                    }
+
+                    Picker("Voice", selection: $viewModel.voice) {
+                        ForEach(ProviderSettings.supportedVoices) { voice in
+                            Text(voice.displayName).tag(voice.apiValue)
+                        }
+                    }
+
                     VStack(alignment: .leading, spacing: 8) {
                         Text("Prompt")
                             .font(.subheadline)
@@ -96,6 +109,7 @@ struct ContentView: View {
             }
             .navigationTitle("WristAssist")
             .navigationBarTitleDisplayMode(.inline)
+            .animation(.default, value: viewModel.isAutoReadEnabled)
         }
     }
 
@@ -171,6 +185,22 @@ struct ContentView: View {
             viewModel.apiKeyDraft
         } set: { newValue in
             viewModel.updateAPIKeyDraft(newValue)
+        }
+    }
+
+    private var autoReadBinding: Binding<Bool> {
+        Binding {
+            viewModel.isAutoReadEnabled
+        } set: { newValue in
+            viewModel.setAutoReadEnabled(newValue)
+        }
+    }
+
+    private var ignoreSilentModeBinding: Binding<Bool> {
+        Binding {
+            viewModel.shouldIgnoreSilentModeForAutoRead
+        } set: { newValue in
+            viewModel.setShouldIgnoreSilentModeForAutoRead(newValue)
         }
     }
 }

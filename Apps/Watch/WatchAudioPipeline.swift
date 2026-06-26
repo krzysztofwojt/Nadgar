@@ -4,6 +4,7 @@ import os
 import WristAssistShared
 
 final class WatchAudioPipeline {
+    private static let playbackPrerollMilliseconds = 180
     private static let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "com.kwojt.WristAssist.watchkitapp",
         category: "WatchAudioPipeline"
@@ -20,6 +21,7 @@ final class WatchAudioPipeline {
     private var recentInputRMS: Float = 0
     private var recentOutputRMS: Float = 0
     private var lastInputMetricsLogAt = Date.distantPast
+    private var outputDrainContinuations: [CheckedContinuation<Void, Never>] = []
     private var onInputAudio: (@Sendable (WatchInputAudioChunk) -> Void)?
     private var onOutputPlaybackDrained: (@Sendable () -> Void)?
 
@@ -48,6 +50,27 @@ final class WatchAudioPipeline {
         Self.logger.info("audio engine started")
     }
 
+    func startPlayback(honorsSilentMode: Bool) throws {
+        let session = AVAudioSession.sharedInstance()
+        if honorsSilentMode {
+            try session.setCategory(.ambient, mode: .default)
+        } else {
+            try session.setCategory(.playback, mode: .voicePrompt)
+        }
+        try session.setActive(true)
+
+        configureOutput()
+        if !engine.isRunning {
+            try engine.start()
+        }
+        if !playerNode.isPlaying {
+            playerNode.play()
+        }
+        let category = honorsSilentMode ? "ambient" : "playback"
+        let mode = honorsSilentMode ? "default" : "voicePrompt"
+        Self.logger.info("audio playback engine started category=\(category, privacy: .public) mode=\(mode, privacy: .public) route=\(Self.audioRouteDescription(session.currentRoute), privacy: .public)")
+    }
+
     func enqueueOutputAudio(_ pcm16Data: Data) {
         let samples = PCM16AudioConverter.float32Samples(fromPCM16Data: pcm16Data)
         guard !samples.isEmpty,
@@ -69,19 +92,31 @@ final class WatchAudioPipeline {
         }
 
         let frameCount = Int(buffer.frameLength)
+        let prerollBuffer = Self.silentPrerollBuffer(format: outputFormat)
+        let prerollFrameCount = Int(prerollBuffer?.frameLength ?? 0)
         let outputRMS = Self.rootMeanSquare(samples)
-        let generation = playbackQueue.sync {
-            if pendingOutputBuffers == 0 {
+        let tracking = playbackQueue.sync {
+            let isStartingPlayback = pendingOutputBuffers == 0
+            if isStartingPlayback {
                 outputPlaybackStartedAt = Date()
                 Self.logger.info("output playback started")
             }
-            pendingOutputBuffers += 1
+            pendingOutputBuffers += isStartingPlayback && prerollBuffer != nil ? 2 : 1
             recentOutputRMS = max(recentOutputRMS * 0.8, outputRMS)
-            return playbackGeneration
+            return (
+                generation: playbackGeneration,
+                shouldSchedulePreroll: isStartingPlayback && prerollBuffer != nil
+            )
+        }
+
+        if tracking.shouldSchedulePreroll, let prerollBuffer {
+            playerNode.scheduleBuffer(prerollBuffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
+                self?.markOutputBufferPlayed(frameCount: prerollFrameCount, generation: tracking.generation)
+            }
         }
 
         playerNode.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
-            self?.markOutputBufferPlayed(frameCount: frameCount, generation: generation)
+            self?.markOutputBufferPlayed(frameCount: frameCount, generation: tracking.generation)
         }
 
         if !playerNode.isPlaying {
@@ -89,14 +124,36 @@ final class WatchAudioPipeline {
         }
     }
 
+    func waitForOutputPlaybackToDrain() async {
+        await withCheckedContinuation { continuation in
+            let shouldResumeNow = playbackQueue.sync {
+                guard pendingOutputBuffers > 0 else {
+                    return true
+                }
+
+                outputDrainContinuations.append(continuation)
+                return false
+            }
+
+            if shouldResumeNow {
+                continuation.resume()
+            }
+        }
+    }
+
     func resetOutputPlaybackTracking() {
-        playbackQueue.sync {
+        let continuations = playbackQueue.sync {
             playbackGeneration += 1
             pendingOutputBuffers = 0
             playedOutputFrames = 0
             outputPlaybackStartedAt = nil
             recentOutputRMS = 0
             Self.logger.info("output tracking reset generation=\(self.playbackGeneration, privacy: .public)")
+            return drainOutputWaiters()
+        }
+
+        for continuation in continuations {
+            continuation.resume()
         }
     }
 
@@ -135,12 +192,22 @@ final class WatchAudioPipeline {
         return audioEndMilliseconds
     }
 
+    func stopPlaybackAndClearQueue() {
+        playerNode.stop()
+        resetOutputPlaybackTracking()
+        if engine.isRunning {
+            engine.stop()
+        }
+        try? AVAudioSession.sharedInstance().setActive(false)
+        Self.logger.info("audio playback stopped")
+    }
+
     func stop() {
         engine.inputNode.removeTap(onBus: 0)
         playerNode.stop()
         engine.stop()
         try? AVAudioSession.sharedInstance().setActive(false)
-        playbackQueue.sync {
+        let continuations = playbackQueue.sync {
             playbackGeneration += 1
             pendingOutputBuffers = 0
             playedOutputFrames = 0
@@ -148,6 +215,10 @@ final class WatchAudioPipeline {
             recentInputRMS = 0
             recentOutputRMS = 0
             lastInputMetricsLogAt = .distantPast
+            return drainOutputWaiters()
+        }
+        for continuation in continuations {
+            continuation.resume()
         }
         onInputAudio = nil
         onOutputPlaybackDrained = nil
@@ -264,9 +335,9 @@ final class WatchAudioPipeline {
     }
 
     private func markOutputBufferPlayed(frameCount: Int, generation: Int) {
-        let didDrain = playbackQueue.sync {
+        let result = playbackQueue.sync {
             guard generation == playbackGeneration else {
-                return false
+                return (didDrain: false, continuations: [] as [CheckedContinuation<Void, Never>])
             }
 
             if pendingOutputBuffers > 0 {
@@ -280,12 +351,22 @@ final class WatchAudioPipeline {
                 recentOutputRMS = 0
                 Self.logger.info("output playback drained playedMs=\(Int((Double(self.playedOutputFrames) / self.outputFormat.sampleRate) * 1_000), privacy: .public)")
             }
-            return didDrain
+            return (didDrain: didDrain, continuations: didDrain ? drainOutputWaiters() : [])
         }
 
-        if didDrain {
+        for continuation in result.continuations {
+            continuation.resume()
+        }
+
+        if result.didDrain {
             onOutputPlaybackDrained?()
         }
+    }
+
+    private func drainOutputWaiters() -> [CheckedContinuation<Void, Never>] {
+        let continuations = outputDrainContinuations
+        outputDrainContinuations.removeAll()
+        return continuations
     }
 
     private func playedOutputMilliseconds() -> Int {
@@ -300,6 +381,31 @@ final class WatchAudioPipeline {
             partialResult + Double(sample * sample)
         }
         return Float(sqrt(sumOfSquares / Double(samples.count)))
+    }
+
+    private static func silentPrerollBuffer(format: AVAudioFormat) -> AVAudioPCMBuffer? {
+        let frameCount = AVAudioFrameCount(
+            (format.sampleRate * Double(playbackPrerollMilliseconds) / 1_000).rounded()
+        )
+        guard frameCount > 0,
+              let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount)
+        else {
+            return nil
+        }
+
+        buffer.frameLength = frameCount
+        if let channel = buffer.floatChannelData?[0] {
+            for index in 0..<Int(frameCount) {
+                channel[index] = 0
+            }
+        }
+        return buffer
+    }
+
+    private static func audioRouteDescription(_ route: AVAudioSessionRouteDescription) -> String {
+        let inputs = route.inputs.map { "\($0.portType.rawValue):\($0.portName)" }.joined(separator: ",")
+        let outputs = route.outputs.map { "\($0.portType.rawValue):\($0.portName)" }.joined(separator: ",")
+        return "inputs=[\(inputs)] outputs=[\(outputs)]"
     }
 
     private func requestRecordPermission() async -> Bool {

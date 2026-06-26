@@ -31,6 +31,9 @@ public struct ProviderSettings: Codable, Equatable, Sendable {
     public var transcriptionModel: String
     public var voice: String
     public var instructions: String
+    public var isAutoReadEnabled: Bool
+    public var shouldIgnoreSilentModeForAutoRead: Bool
+    public var ttsModel: String
 
     public init(
         selectedAuthMode: AuthMode = .openAIAPIKey,
@@ -38,7 +41,10 @@ public struct ProviderSettings: Codable, Equatable, Sendable {
         model: String = Self.defaultModel,
         transcriptionModel: String = Self.defaultTranscriptionModel,
         voice: String = Self.defaultVoice,
-        instructions: String = Self.defaultInstructions
+        instructions: String = Self.defaultInstructions,
+        isAutoReadEnabled: Bool = false,
+        shouldIgnoreSilentModeForAutoRead: Bool = false,
+        ttsModel: String = Self.defaultTTSModel
     ) {
         self.selectedAuthMode = selectedAuthMode
         self.hasAPIKey = hasAPIKey
@@ -46,6 +52,9 @@ public struct ProviderSettings: Codable, Equatable, Sendable {
         self.transcriptionModel = Self.normalizedTranscriptionModel(transcriptionModel)
         self.voice = Self.normalizedVoice(voice)
         self.instructions = instructions
+        self.isAutoReadEnabled = isAutoReadEnabled
+        self.shouldIgnoreSilentModeForAutoRead = shouldIgnoreSilentModeForAutoRead
+        self.ttsModel = Self.normalizedTTSModel(ttsModel)
     }
 
     public init(from decoder: Decoder) throws {
@@ -57,6 +66,9 @@ public struct ProviderSettings: Codable, Equatable, Sendable {
             ?? Self.defaultTranscriptionModel
         let voice = try container.decodeIfPresent(String.self, forKey: .voice) ?? Self.defaultVoice
         let instructions = try container.decodeIfPresent(String.self, forKey: .instructions) ?? Self.defaultInstructions
+        let isAutoReadEnabled = try container.decodeIfPresent(Bool.self, forKey: .isAutoReadEnabled) ?? false
+        let shouldIgnoreSilentModeForAutoRead = try container.decodeIfPresent(Bool.self, forKey: .shouldIgnoreSilentModeForAutoRead) ?? false
+        let ttsModel = try container.decodeIfPresent(String.self, forKey: .ttsModel) ?? Self.defaultTTSModel
 
         self.init(
             selectedAuthMode: selectedAuthMode,
@@ -64,12 +76,16 @@ public struct ProviderSettings: Codable, Equatable, Sendable {
             model: model,
             transcriptionModel: transcriptionModel,
             voice: voice,
-            instructions: instructions
+            instructions: instructions,
+            isAutoReadEnabled: isAutoReadEnabled,
+            shouldIgnoreSilentModeForAutoRead: shouldIgnoreSilentModeForAutoRead,
+            ttsModel: ttsModel
         )
     }
 
     public static let defaultModel = StandalonePTTDefaults.assistantModel
     public static let defaultTranscriptionModel = StandalonePTTDefaults.transcriptionModel
+    public static let defaultTTSModel = StandalonePTTDefaults.speechModel
     public static let defaultVoice = "marin"
     public static let defaultInstructions = "You are WristAssist, a concise voice assistant on Apple Watch. Answer briefly unless the user asks for detail."
 
@@ -91,6 +107,9 @@ public struct ProviderSettings: Codable, Equatable, Sendable {
         RealtimeVoiceOption(apiValue: "ballad", displayName: "Ballad"),
         RealtimeVoiceOption(apiValue: "coral", displayName: "Coral"),
         RealtimeVoiceOption(apiValue: "echo", displayName: "Echo"),
+        RealtimeVoiceOption(apiValue: "fable", displayName: "Fable"),
+        RealtimeVoiceOption(apiValue: "nova", displayName: "Nova"),
+        RealtimeVoiceOption(apiValue: "onyx", displayName: "Onyx"),
         RealtimeVoiceOption(apiValue: "sage", displayName: "Sage"),
         RealtimeVoiceOption(apiValue: "shimmer", displayName: "Shimmer"),
         RealtimeVoiceOption(apiValue: "verse", displayName: "Verse"),
@@ -106,6 +125,10 @@ public struct ProviderSettings: Codable, Equatable, Sendable {
 
     public static func normalizedTranscriptionModel(_ model: String) -> String {
         normalizedOptionValue(model, options: supportedTranscriptionModels, fallback: defaultTranscriptionModel)
+    }
+
+    public static func normalizedTTSModel(_ model: String) -> String {
+        defaultTTSModel
     }
 
     public static func normalizedVoice(_ voice: String) -> String {

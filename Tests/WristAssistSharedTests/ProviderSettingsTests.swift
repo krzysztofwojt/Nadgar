@@ -47,6 +47,23 @@ struct ProviderSettingsTests {
         #expect(settings.transcriptionModel == "gpt-4o-transcribe")
         #expect(settings.voice == "marin")
         #expect(settings.instructions == "Answer briefly.")
+        #expect(!settings.isAutoReadEnabled)
+        #expect(!settings.shouldIgnoreSilentModeForAutoRead)
+        #expect(settings.ttsModel == ProviderSettings.defaultTTSModel)
+    }
+
+    @Test func initializerStoresAutoReadSilentModeOverrideAndNormalizesTTSModel() {
+        let settings = ProviderSettings(
+            voice: "NOVA",
+            isAutoReadEnabled: true,
+            shouldIgnoreSilentModeForAutoRead: true,
+            ttsModel: "legacy-tts"
+        )
+
+        #expect(settings.voice == "nova")
+        #expect(settings.isAutoReadEnabled)
+        #expect(settings.shouldIgnoreSilentModeForAutoRead)
+        #expect(settings.ttsModel == ProviderSettings.defaultTTSModel)
     }
 
     @Test func decodedSettingsDefaultMissingTranscriptionModel() throws {
@@ -74,9 +91,29 @@ struct ProviderSettingsTests {
     }
 
     @Test func supportedVoicesExposeCapitalizedDisplayNamesAndLowercaseAPIValues() {
-        #expect(ProviderSettings.supportedVoices.map(\.displayName).contains("Marin"))
+        let voiceNames = ProviderSettings.supportedVoices.map(\.displayName)
+        let apiValues = ProviderSettings.supportedVoices.map(\.apiValue)
+
+        #expect(voiceNames.contains("Marin"))
+        #expect(voiceNames.contains("Fable"))
+        #expect(voiceNames.contains("Nova"))
+        #expect(voiceNames.contains("Onyx"))
         #expect(!ProviderSettings.supportedVoices.map(\.displayName).contains("marin"))
-        #expect(ProviderSettings.supportedVoices.map(\.apiValue).contains("marin"))
-        #expect(!ProviderSettings.supportedVoices.map(\.apiValue).contains("Marin"))
+        #expect(apiValues == [
+            "alloy",
+            "ash",
+            "ballad",
+            "coral",
+            "echo",
+            "fable",
+            "nova",
+            "onyx",
+            "sage",
+            "shimmer",
+            "verse",
+            "marin",
+            "cedar"
+        ])
+        #expect(!apiValues.contains("Marin"))
     }
 }

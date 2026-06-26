@@ -125,6 +125,17 @@ final class WatchPTTRecorder {
         deleteTemporaryFile(at: url)
     }
 
+    func invalidatePrewarmForAudioSessionChange() {
+        guard !isRecording else { return }
+        guard activeRecorder != nil || isAudioSessionActive else { return }
+
+        let url = activeRecordingURL
+        activeStartID = nil
+        resetRecorderState(deactivateSession: true)
+        deleteTemporaryFile(at: url)
+        Self.logger.info("ptt recorder prewarm invalidated for audio session change")
+    }
+
     func deleteTemporaryFile(at url: URL?) {
         guard let url else { return }
         try? FileManager.default.removeItem(at: url)
@@ -148,10 +159,10 @@ final class WatchPTTRecorder {
         guard !isAudioSessionActive else { return }
 
         let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.playAndRecord, mode: .voiceChat)
+        try session.setCategory(.record, mode: .measurement)
         try session.setActive(true)
         isAudioSessionActive = true
-        Self.logger.info("ptt audio session active category=playAndRecord mode=voiceChat")
+        Self.logger.info("ptt audio session active category=record mode=measurement route=\(Self.audioRouteDescription(session.currentRoute), privacy: .public)")
     }
 
     private func prepareRecorder() throws {
@@ -226,6 +237,12 @@ final class WatchPTTRecorder {
             AVLinearPCMIsBigEndianKey: false,
             AVLinearPCMIsFloatKey: false
         ]
+    }
+
+    private static func audioRouteDescription(_ route: AVAudioSessionRouteDescription) -> String {
+        let inputs = route.inputs.map { "\($0.portType.rawValue):\($0.portName)" }.joined(separator: ",")
+        let outputs = route.outputs.map { "\($0.portType.rawValue):\($0.portName)" }.joined(separator: ",")
+        return "inputs=[\(inputs)] outputs=[\(outputs)]"
     }
 }
 

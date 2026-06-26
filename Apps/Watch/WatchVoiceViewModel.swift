@@ -10,7 +10,8 @@ final class WatchVoiceViewModel: ObservableObject {
     private static let transcriptionFailedPlaceholderText = "Transcription failed"
     private static let assistantPlaceholderText = "Writing..."
     private static let assistantFailedPlaceholderText = "Response failed"
-    private static let recordingStartFailedText = "Recording could not be started."
+    private static let recordingStartFailedPrefix = "Recording could not be started"
+    private static let recordingStartFailedText = "\(recordingStartFailedPrefix)."
     private static let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "com.kwojt.WristAssist.watchkitapp",
         category: "WatchVoiceViewModel"
@@ -48,8 +49,13 @@ final class WatchVoiceViewModel: ObservableObject {
     private let recorder: WatchPTTRecorder
     private let transcriptionClient: OpenAITranscriptionClient
     private let responsesClient: OpenAIResponsesClient
+    private let speechClient: OpenAISpeechClient
+    private let speechAudioPipeline: WatchAudioPipeline
     private let openAITestMode: WatchOpenAITestMode
     private var apiKey: String?
+    private var speechPlaybackTask: Task<Void, Never>?
+    private var speechPlaybackID: UUID?
+    private var speechFragmentContinuation: AsyncStream<String>.Continuation?
     private var isPushToTalkHoldActive = false
     private var isRecordingStartPending = false
     private var shouldFinishPushToTalkAfterStart = false
@@ -71,6 +77,8 @@ final class WatchVoiceViewModel: ObservableObject {
         recorder: WatchPTTRecorder? = nil,
         transcriptionClient: OpenAITranscriptionClient = OpenAITranscriptionClient(),
         responsesClient: OpenAIResponsesClient = OpenAIResponsesClient(),
+        speechClient: OpenAISpeechClient = OpenAISpeechClient(),
+        speechAudioPipeline: WatchAudioPipeline = WatchAudioPipeline(),
         openAITestMode: WatchOpenAITestMode = .current
     ) {
         let localConfiguration = configurationStore.loadConfiguration()
@@ -80,6 +88,8 @@ final class WatchVoiceViewModel: ObservableObject {
         self.recorder = recorder ?? WatchPTTRecorder()
         self.transcriptionClient = transcriptionClient
         self.responsesClient = responsesClient
+        self.speechClient = speechClient
+        self.speechAudioPipeline = speechAudioPipeline
         self.openAITestMode = openAITestMode
         self.remainingMockTranscriptionFailures = openAITestMode.transcriptionFailuresBeforeSuccess
         self.pttState = .ready
@@ -134,6 +144,7 @@ final class WatchVoiceViewModel: ObservableObject {
     }
 
     func suspendAudioWarmup() {
+        stopAssistantSpeechPlayback()
         recorder.cancel()
 
         guard isPushToTalkRecording || isRecordingStartPending || isPushToTalkHoldActive else {
@@ -158,6 +169,10 @@ final class WatchVoiceViewModel: ObservableObject {
     func beginPushToTalkRecording() {
         guard !isPushToTalkHoldActive else { return }
         isPushToTalkHoldActive = true
+
+        if pttState == .ready || pttState == .failed {
+            stopAssistantSpeechPlayback()
+        }
 
         guard canBeginRecording else {
             isPushToTalkHoldActive = false
@@ -237,7 +252,7 @@ final class WatchVoiceViewModel: ObservableObject {
 
                 pttState = .failed
                 errorMessage = error.localizedDescription
-                appendRecordingStartFailure(error.localizedDescription)
+                showRecordingStartFailure(error.localizedDescription)
                 Self.logger.error("ptt recording start failed error=\(error.localizedDescription, privacy: .public)")
             }
         }
@@ -293,6 +308,7 @@ final class WatchVoiceViewModel: ObservableObject {
 
     func cancelPushToTalkRecording() {
         guard isPushToTalkHoldActive || isPushToTalkRecording || isRecordingStartPending || isRecordingLocked else { return }
+        stopAssistantSpeechPlayback()
         isPushToTalkHoldActive = false
         isRecordingLocked = false
         shouldFinishPushToTalkAfterStart = false
@@ -373,6 +389,7 @@ final class WatchVoiceViewModel: ObservableObject {
         } catch {
             guard activeTurnID == turnID else { return }
             let failureDescription = error.localizedDescription
+            stopAssistantSpeechPlayback()
             failTranscribingPlaceholder(id: userPlaceholder.id, errorDescription: failureDescription)
             failAssistantPlaceholder(id: assistantPlaceholderID, errorDescription: failureDescription)
             pttState = .failed
@@ -385,6 +402,7 @@ final class WatchVoiceViewModel: ObservableObject {
 
     private func cancelPushToTalkRecordingIfNeeded() async {
         activeTurnID = UUID()
+        stopAssistantSpeechPlayback()
         recorder.cancel()
         isPushToTalkHoldActive = false
         isRecordingStartPending = false
@@ -410,10 +428,20 @@ final class WatchVoiceViewModel: ObservableObject {
     private func applySettings(_ incomingSettings: ProviderSettings) {
         var updatedSettings = incomingSettings
         updatedSettings.hasAPIKey = hasAPIKey
+        let shouldStopSpeechPlayback = settings.isAutoReadEnabled != updatedSettings.isAutoReadEnabled ||
+            settings.shouldIgnoreSilentModeForAutoRead != updatedSettings.shouldIgnoreSilentModeForAutoRead ||
+            settings.voice != updatedSettings.voice ||
+            settings.ttsModel != updatedSettings.ttsModel
 
         do {
             try configurationStore.saveSettings(updatedSettings)
             settings = updatedSettings
+            Self.logger.info(
+                "settings applied autoRead=\(updatedSettings.isAutoReadEnabled, privacy: .public) ignoresSilentMode=\(updatedSettings.shouldIgnoreSilentModeForAutoRead, privacy: .public) voice=\(updatedSettings.voice, privacy: .public) ttsModel=\(updatedSettings.ttsModel, privacy: .public)"
+            )
+            if shouldStopSpeechPlayback {
+                stopAssistantSpeechPlayback()
+            }
             errorMessage = nil
         } catch {
             errorMessage = error.localizedDescription
@@ -480,6 +508,7 @@ final class WatchVoiceViewModel: ObservableObject {
     private func resetSessionForCredentialChange() {
         activeTurnID = UUID()
         activeRecordingStartID = nil
+        stopAssistantSpeechPlayback()
         recorder.cancel()
         recorder.cleanupTemporaryFiles()
         messages.removeAll()
@@ -578,6 +607,12 @@ final class WatchVoiceViewModel: ObservableObject {
     ) async throws -> OpenAIAssistantResponse {
         var finalResponse: OpenAIAssistantResponse?
         var streamedText = ""
+        var speechChunker = AssistantSpeechChunker()
+        startAssistantSpeechPlaybackIfNeeded(apiKey: apiKey)
+        defer {
+            flushAssistantSpeechChunks(from: &speechChunker)
+            finishAssistantSpeechPlaybackInput()
+        }
 
         for try await update in assistantResponseStream(apiKey: apiKey, messages: messages) {
             guard activeTurnID == turnID else {
@@ -588,9 +623,13 @@ final class WatchVoiceViewModel: ObservableObject {
             case .textDelta(let delta):
                 streamedText += delta
                 appendAssistantTextDelta(id: placeholderID, delta: delta)
+                enqueueAssistantSpeechChunks(speechChunker.append(delta))
             case .completed(let response):
                 let completedText = response.text.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !completedText.isEmpty {
+                    if streamedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        enqueueAssistantSpeechChunks(speechChunker.append(response.text))
+                    }
                     updateAssistantPlaceholder(id: placeholderID, response: response)
                     finalResponse = response
                 } else if !streamedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -605,6 +644,7 @@ final class WatchVoiceViewModel: ObservableObject {
                 Self.logger.error("ptt stream ended without text or completion; falling back to full response")
                 let fallbackResponse = try await assistantResponse(apiKey: apiKey, messages: messages)
                 updateAssistantPlaceholder(id: placeholderID, response: fallbackResponse)
+                enqueueAssistantSpeechText(fallbackResponse.text)
                 Self.logger.info("ptt full response fallback succeeded characters=\(fallbackResponse.text.count, privacy: .public) citations=\(fallbackResponse.citations.count, privacy: .public)")
                 return fallbackResponse
             }
@@ -616,6 +656,124 @@ final class WatchVoiceViewModel: ObservableObject {
         }
 
         return finalResponse
+    }
+
+    private func startAssistantSpeechPlaybackIfNeeded(apiKey: String) {
+        stopAssistantSpeechPlayback()
+        guard settings.isAutoReadEnabled else {
+            Self.logger.info("ptt speech playback skipped reason=auto_read_disabled")
+            return
+        }
+        guard !openAITestMode.isEnabled else {
+            Self.logger.info("ptt speech playback skipped reason=openai_test_mode")
+            return
+        }
+
+        recorder.invalidatePrewarmForAudioSessionChange()
+
+        var streamContinuation: AsyncStream<String>.Continuation?
+        let stream = AsyncStream<String> { continuation in
+            streamContinuation = continuation
+        }
+        speechFragmentContinuation = streamContinuation
+
+        let settingsSnapshot = settings
+        Self.logger.info(
+            "ptt speech playback starting voice=\(settingsSnapshot.voice, privacy: .public) model=\(settingsSnapshot.ttsModel, privacy: .public) ignoresSilentMode=\(settingsSnapshot.shouldIgnoreSilentModeForAutoRead, privacy: .public)"
+        )
+        let playbackID = UUID()
+        speechPlaybackID = playbackID
+        speechPlaybackTask = Task { [weak self, speechClient, speechAudioPipeline] in
+            defer {
+                Task { @MainActor [weak self] in
+                    self?.finishAssistantSpeechPlaybackTask(id: playbackID)
+                }
+            }
+
+            do {
+                try speechAudioPipeline.startPlayback(
+                    honorsSilentMode: !settingsSnapshot.shouldIgnoreSilentModeForAutoRead
+                )
+
+                for await fragment in stream {
+                    try Task.checkCancellation()
+                    let spokenText = AssistantSpeechTextSanitizer.spokenText(from: fragment)
+                    guard !spokenText.isEmpty else {
+                        Self.logger.info("ptt speech fragment skipped reason=empty_after_sanitizing")
+                        continue
+                    }
+
+                    Self.logger.info("ptt speech fragment queued characters=\(spokenText.count, privacy: .public)")
+                    for try await pcmData in speechClient.speechAudioStream(
+                        apiKey: apiKey,
+                        settings: settingsSnapshot,
+                        input: spokenText
+                    ) {
+                        try Task.checkCancellation()
+                        speechAudioPipeline.enqueueOutputAudio(pcmData)
+                    }
+                }
+                try Task.checkCancellation()
+                await speechAudioPipeline.waitForOutputPlaybackToDrain()
+                try Task.checkCancellation()
+            } catch is CancellationError {
+                return
+            } catch {
+                Self.logger.error("ptt speech playback failed error=\(error.localizedDescription, privacy: .public)")
+            }
+        }
+    }
+
+    private func enqueueAssistantSpeechChunks(_ chunks: [String]) {
+        guard speechFragmentContinuation != nil else { return }
+
+        for chunk in chunks where !chunk.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            speechFragmentContinuation?.yield(chunk)
+        }
+    }
+
+    private func enqueueAssistantSpeechText(_ text: String) {
+        guard speechFragmentContinuation != nil else { return }
+
+        var chunker = AssistantSpeechChunker()
+        enqueueAssistantSpeechChunks(chunker.append(text))
+        enqueueAssistantSpeechChunks(chunker.flush())
+    }
+
+    private func flushAssistantSpeechChunks(from chunker: inout AssistantSpeechChunker) {
+        enqueueAssistantSpeechChunks(chunker.flush())
+    }
+
+    private func finishAssistantSpeechPlaybackInput() {
+        speechFragmentContinuation?.finish()
+        speechFragmentContinuation = nil
+    }
+
+    private func stopAssistantSpeechPlayback() {
+        let hadSpeechPlayback = speechPlaybackTask != nil || speechFragmentContinuation != nil
+        speechFragmentContinuation?.finish()
+        speechFragmentContinuation = nil
+        speechPlaybackTask?.cancel()
+        speechPlaybackID = nil
+        speechPlaybackTask = nil
+        if hadSpeechPlayback {
+            speechAudioPipeline.stopPlaybackAndClearQueue()
+        }
+    }
+
+    private func clearAssistantSpeechPlaybackTask(id: UUID) {
+        guard speechPlaybackID == id else { return }
+
+        speechPlaybackID = nil
+        speechPlaybackTask = nil
+        speechFragmentContinuation = nil
+    }
+
+    private func finishAssistantSpeechPlaybackTask(id: UUID) {
+        guard speechPlaybackID == id else { return }
+
+        speechAudioPipeline.stopPlaybackAndClearQueue()
+        clearAssistantSpeechPlaybackTask(id: id)
     }
 
     private func reserveTranscribingPlaceholder() -> TranscribingPlaceholderReservation {
@@ -657,7 +815,9 @@ final class WatchVoiceViewModel: ObservableObject {
     private func isTranscribingPlaceholderText(_ text: String) -> Bool {
         text == Self.transcriptionPlaceholderText ||
             text == Self.transcriptionFailedPlaceholderText ||
-            text.hasPrefix("\(Self.transcriptionFailedPlaceholderText):")
+            text.hasPrefix("\(Self.transcriptionFailedPlaceholderText):") ||
+            text == Self.recordingStartFailedText ||
+            text.hasPrefix("\(Self.recordingStartFailedPrefix):")
     }
 
     private func cancelTranscribingPlaceholder(_ reservation: TranscribingPlaceholderReservation) {
@@ -672,19 +832,37 @@ final class WatchVoiceViewModel: ObservableObject {
         }
     }
 
-    private func appendRecordingStartFailure(_ errorDescription: String) {
-        let trimmedDescription = errorDescription.trimmingCharacters(in: .whitespacesAndNewlines)
-        let text = trimmedDescription.isEmpty ? Self.recordingStartFailedText : trimmedDescription
+    private func showRecordingStartFailure(_ errorDescription: String) {
+        let reservation = reserveTranscribingPlaceholder()
+        let failureText = recordingStartFailureText(errorDescription)
 
-        if let lastMessage = messages.last,
-           lastMessage.role == .assistant,
-           lastMessage.isPlaceholder,
-           lastMessage.text == text
-        {
-            return
+        updateMessage(id: reservation.id) { message in
+            message.role = .user
+            message.text = failureText
+            message.citations = []
+            message.isPlaceholder = true
+        } fallback: {
+            self.messages.append(
+                ChatMessage(
+                    id: reservation.id,
+                    role: .user,
+                    text: failureText,
+                    isPlaceholder: true
+                )
+            )
+        }
+    }
+
+    private func recordingStartFailureText(_ errorDescription: String) -> String {
+        let trimmedDescription = errorDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedDescription.isEmpty,
+              trimmedDescription != Self.recordingStartFailedPrefix,
+              trimmedDescription != Self.recordingStartFailedText
+        else {
+            return Self.recordingStartFailedText
         }
 
-        messages.append(ChatMessage(role: .assistant, text: text, isPlaceholder: true))
+        return "\(Self.recordingStartFailedPrefix): \(trimmedDescription)"
     }
 
     private func updateTranscribingPlaceholder(id: UUID, transcript: String) {

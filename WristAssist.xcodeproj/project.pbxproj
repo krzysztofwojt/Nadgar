@@ -29,6 +29,7 @@
 		000000000000000000000123 /* WristAssistComplicationBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000223 /* WristAssistComplicationBundle.swift */; };
 		000000000000000000000124 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000225 /* Assets.xcassets */; };
 		000000000000000000000125 /* WristAssist Watch Complication Extension.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = 000000000000000000000304 /* WristAssist Watch Complication Extension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		000000000000000000000126 /* OpenAISpeechClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000226 /* OpenAISpeechClient.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -95,6 +96,7 @@
 		000000000000000000000223 /* WristAssistComplicationBundle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WristAssistComplicationBundle.swift; sourceTree = "<group>"; };
 		000000000000000000000224 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		000000000000000000000225 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		000000000000000000000226 /* OpenAISpeechClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenAISpeechClient.swift; sourceTree = "<group>"; };
 		000000000000000000000301 /* WristAssist.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = WristAssist.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		000000000000000000000302 /* WristAssist Watch App.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "WristAssist Watch App.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		000000000000000000000303 /* Package.swift */ = {isa = PBXFileReference; lastKnownFileType = text; path = Package.swift; sourceTree = "<group>"; };
@@ -183,6 +185,7 @@
 				000000000000000000000218 /* WatchPTTRecorder.swift */,
 				000000000000000000000219 /* OpenAITranscriptionClient.swift */,
 				000000000000000000000220 /* OpenAIResponsesClient.swift */,
+				000000000000000000000226 /* OpenAISpeechClient.swift */,
 				000000000000000000000217 /* Info.plist */,
 				000000000000000000000222 /* Assets.xcassets */,
 			);
@@ -362,6 +365,7 @@
 				000000000000000000000118 /* WatchPTTRecorder.swift in Sources */,
 				000000000000000000000119 /* OpenAITranscriptionClient.swift in Sources */,
 				000000000000000000000120 /* OpenAIResponsesClient.swift in Sources */,
+				000000000000000000000126 /* OpenAISpeechClient.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
