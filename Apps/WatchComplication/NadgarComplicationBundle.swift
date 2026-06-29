@@ -99,7 +99,7 @@ private struct NadgarComplicationView: View {
     private var icon: some View {
         NadgarLogoMark()
             .aspectRatio(1, contentMode: .fit)
-            .widgetAccentable(false)
+            .widgetAccentable()
     }
 }
 
@@ -107,6 +107,8 @@ private struct NadgarLogoMark: View {
     private static let viewBoxSize: CGFloat = 1024
     private static let sourceBounds = CGRect(x: 160, y: 160, width: 704, height: 704)
     private static let blue = Color(red: 0.0 / 255.0, green: 75.0 / 255.0, blue: 252.0 / 255.0)
+
+    @Environment(\.widgetRenderingMode) private var widgetRenderingMode
 
     var body: some View {
         GeometryReader { proxy in
@@ -134,26 +136,46 @@ private struct NadgarLogoMark: View {
             )
 
             ZStack {
-                RoundedRectangle(cornerRadius: 82.00 * scale, style: .continuous)
-                    .fill(.black)
-                    .frame(width: logoFrame.width, height: logoFrame.height)
-                    .position(x: logoFrame.midX, y: logoFrame.midY)
-
-                Self.bluePath()
-                    .applying(transform)
-                    .fill(Self.blue, style: FillStyle(eoFill: true))
-
-                Self.whiteWavePath()
-                    .applying(transform)
-                    .fill(.white, style: FillStyle(eoFill: true))
-
-                RoundedRectangle(cornerRadius: 82.00 * scale, style: .continuous)
-                    .stroke(.white, lineWidth: 29.00 * scale)
-                    .frame(width: logoFrame.width, height: logoFrame.height)
-                    .position(x: logoFrame.midX, y: logoFrame.midY)
+                logoContents(transform: transform, logoFrame: logoFrame, scale: scale)
             }
             .frame(width: proxy.size.width, height: proxy.size.height)
         }
+    }
+
+    @ViewBuilder
+    private func logoContents(transform: CGAffineTransform, logoFrame: CGRect, scale: CGFloat) -> some View {
+        switch widgetRenderingMode {
+        case .fullColor:
+            Self.bluePath()
+                .applying(transform)
+                .fill(Self.blue, style: FillStyle(eoFill: true))
+
+            Self.whiteWavePath()
+                .applying(transform)
+                .fill(.white, style: FillStyle(eoFill: true))
+
+            logoFrameStroke(frame: logoFrame, scale: scale)
+                .foregroundStyle(.white)
+
+        default:
+            Self.bluePath()
+                .applying(transform)
+                .fill(.primary, style: FillStyle(eoFill: true))
+
+            Self.whiteWavePath()
+                .applying(transform)
+                .fill(.primary, style: FillStyle(eoFill: true))
+
+            logoFrameStroke(frame: logoFrame, scale: scale)
+                .foregroundStyle(.primary)
+        }
+    }
+
+    private func logoFrameStroke(frame: CGRect, scale: CGFloat) -> some View {
+        RoundedRectangle(cornerRadius: 82.00 * scale, style: .continuous)
+            .stroke(lineWidth: 29.00 * scale)
+            .frame(width: frame.width, height: frame.height)
+            .position(x: frame.midX, y: frame.midY)
     }
 
     private static func bluePath() -> Path {
