@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Nadgar</title>
+    <meta name="description" content="Nadgar is a push-to-talk assistant for Apple Watch that uses your own OpenAI API key.">
+    <meta property="og:title" content="Nadgar">
+    <meta property="og:description" content="Handy AI on Apple Watch. Your own keys, your own tools, open source.">
+    <meta property="og:image" content="https://nadgar.app/assets/nadgar-icon.png?v=20260630e">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://nadgar.app/">
+    <link rel="icon" href="/assets/nadgar-icon.png?v=20260630e">
+    <link rel="apple-touch-icon" href="/assets/nadgar-icon.png?v=20260630e">
+    <link rel="stylesheet" href="/styles.css?v=20260630e">
+  </head>
+  <body class="home-page">
+    <a class="skip-link" href="#main">Skip to content</a>
+
+    <main id="main" class="home-stack">
+      <section class="sketch-board landing-board" aria-labelledby="hero-title">
+        <header class="board-nav">
+          <a class="brand-word" href="/" aria-label="Nadgar home">Nadgar</a>
+          <nav class="nav-links" aria-label="Main navigation">
+            <a href="#faq">FAQ</a>
+            <span aria-hidden="true">|</span>
+            <a href="#privacy">Privacy</a>
+            <span aria-hidden="true">|</span>
+            <a href="https://github.com/krzysztofwojt/Nadgar">GitHub</a>
+          </nav>
+        </header>
+
+        <div class="landing-center">
+          <img class="hero-mark" src="/assets/nadgar-icon.png?v=20260630e" width="1024" height="1024" alt="Nadgar app icon">
+          <h1 id="hero-title">
+            <span class="hero-main">Handy AI. Right there on your wrist.</span>
+            <span class="hero-support">Your own keys.<br>Your own tools.<br>Open source.</span>
+          </h1>
+          <button class="beta-button" type="button" disabled>Register for beta (coming soon)</button>
+        </div>
+      </section>
+
+      <section class="sketch-board features-board" aria-labelledby="features-title">
+        <h2 id="features-title" class="visually-hidden">Nadgar features</h2>
+        <div class="feature-grid">
+          <article class="feature-card">
+            <svg class="feature-icon" viewBox="0 0 32 32" aria-hidden="true">
+              <circle cx="11" cy="14" r="5"></circle>
+              <path d="M16 14h11M23 14v4M19 14v3"></path>
+            </svg>
+            <h3>BYOK</h3>
+            <p>Free to use. You pay only for the tokens you use.</p>
+          </article>
+
+          <article class="feature-card feature-wide">
+            <div>
+              <svg class="feature-icon" viewBox="0 0 32 32" aria-hidden="true">
+                <path d="M12 7a4 4 0 0 1 8 0v8a4 4 0 0 1-8 0z"></path>
+                <path d="M8 14a8 8 0 0 0 16 0M16 23v5M12 28h8"></path>
+              </svg>
+              <h3>Hands-free dictation</h3>
+              <p>Lock recording and speak for as long as you want.</p>
+            </div>
+            <div class="screenshot-slot">
+              <img src="/assets/nadgar-app-screenshot.png" width="410" height="502" alt="Nadgar Apple Watch conversation screenshot">
+            </div>
+          </article>
+
+          <article class="feature-card">
+            <svg class="feature-icon" viewBox="0 0 32 32" aria-hidden="true">
+              <circle cx="15" cy="15" r="8"></circle>
+              <path d="M21 21l6 6M7 15h16M15 7a14 14 0 0 1 0 16M15 7a14 14 0 0 0 0 16"></path>
+            </svg>
+            <h3>Web search enabled</h3>
+            <p>Useful for quick research.</p>
+          </article>
+
+          <article class="feature-card">
+            <svg class="feature-icon" viewBox="0 0 32 32" aria-hidden="true">
+              <path d="M9 6v8M15 6v8M7 14h10v4a5 5 0 0 1-10 0zM23 26v-8M17 26v-8M15 18h10v-4a5 5 0 0 0-10 0z"></path>
+            </svg>
+            <h3>MCPs</h3>
+            <p>Your tools on your wrist. Coming soon.</p>
+          </article>
+
+          <article class="feature-card">
+            <svg class="feature-icon" viewBox="0 0 32 32" aria-hidden="true">
+              <path d="M16 4l10 4v7c0 7-4 11-10 13C10 26 6 22 6 15V8z"></path>
+              <path d="M12 16l3 3 6-7"></path>
+            </svg>
+            <h3>Privacy by design</h3>
+            <p>No Nadgar account. No ads. No tracking. Your keys stay on your devices.</p>
+          </article>
+        </div>
+      </section>
+
+      <section id="faq" class="sketch-board text-board faq-board" aria-labelledby="faq-title">
+        <h2 id="faq-title">FAQ</h2>
+        <div class="qa-list">
+          <section class="qa-item">
+            <h3><span>Q</span> Does Nadgar support real-time voice mode?</h3>
+            <p><span>A</span> No. I built a proof of concept, but on Apple Watch it is not practical right now. Real-time voice requires low-level networking, which is not allowed by default on watchOS. See Apple's <a href="https://developer.apple.com/documentation/technotes/tn3135-low-level-networking-on-watchos">TN3135: Low-level networking on watchOS</a>.</p>
+          </section>
+
+          <section class="qa-item">
+            <h3><span>Q</span> Are there any ads?</h3>
+            <p><span>A</span> No.</p>
+          </section>
+
+          <section class="qa-item">
+            <h3><span>Q</span> Is the app free to use?</h3>
+            <p><span>A</span> The app is free to use. You still need an OpenAI Platform account and your own API key. OpenAI charges you for API usage.</p>
+          </section>
+
+          <section class="qa-item">
+            <h3><span>Q</span> Can I use my ChatGPT or Codex subscription with Nadgar?</h3>
+            <p><span>A</span> Not at this time. ChatGPT and Codex subscriptions do not provide a general OpenAI API key for apps like Nadgar. I may revisit this if OpenAI offers a clean way to support it.</p>
+          </section>
+
+          <section class="qa-item">
+            <h3><span>Q</span> Do you store my API key on your servers?</h3>
+            <p><span>A</span> No. Nadgar connects only to OpenAI servers. Your API key is stored locally on your iPhone and Apple Watch in Keychain.</p>
+          </section>
+
+          <section class="qa-item">
+            <h3><span>Q</span> How is it different from Siri?</h3>
+            <p><span>A</span> Older Apple Watches do not have Siri on-device. Nadgar lets you use more capable AI models with web search and, later, connect your own MCP servers from your wrist.</p>
+          </section>
+        </div>
+      </section>
+
+      <section id="privacy" class="sketch-board text-board privacy-board" aria-labelledby="privacy-title">
+        <header class="sheet-title">
+          <h2 id="privacy-title">Privacy Policy for Nadgar</h2>
+          <p>Nadgar is an Apple Watch and iPhone app published by Krzysztof Wójt.</p>
+          <p class="updated">Effective date: June 28, 2026</p>
+        </header>
+
+        <div class="legal-layout">
+          <section class="legal-section">
+            <h3>Information Nadgar Uses</h3>
+            <p>Nadgar is a bring-your-own OpenAI API key app. The app may use:</p>
+            <ul>
+              <li>OpenAI API key: entered on iPhone, stored locally in Apple Keychain, and synced to the paired Apple Watch so the Watch can make OpenAI API requests.</li>
+              <li>Microphone audio: recorded only when you use push-to-talk on Apple Watch.</li>
+              <li>Transcription and chat content: your recorded audio is sent to OpenAI for transcription, and the resulting text and chat context are sent to OpenAI to generate an assistant response.</li>
+              <li>Text-to-speech content: if speech playback is enabled, assistant text may be sent to OpenAI to generate audio playback.</li>
+              <li>App settings: model, voice, transcription, speech, and related preferences are stored locally on your devices.</li>
+            </ul>
+            <p>Nadgar does not require you to create a Nadgar account.</p>
+          </section>
+
+          <section class="legal-section">
+            <h3>How Information Is Stored</h3>
+            <p>Your OpenAI API key is stored locally in Apple Keychain on your iPhone and, after sync, on your paired Apple Watch.</p>
+            <p>Temporary audio files are created on Apple Watch during push-to-talk recording and are deleted after the request is completed, cancelled, or cleaned up by the app.</p>
+            <p>Nadgar does not operate its own server for storing your API key, audio, transcripts, or chat messages.</p>
+          </section>
+
+          <section class="legal-section">
+            <h3>Information Sent to OpenAI</h3>
+            <p>When you use Nadgar, the app sends requests directly from your Apple Watch or iPhone to OpenAI services using the OpenAI API key you provide. These requests may include your API key, microphone audio, transcribed text, chat messages, assistant instructions, selected model settings, and text used for speech playback.</p>
+            <p>OpenAI processes this information under OpenAI's API terms and privacy policies. You should review OpenAI's policies to understand how OpenAI handles API data.</p>
+          </section>
+
+          <section class="legal-section">
+            <h3>Information Nadgar Does Not Collect</h3>
+            <p>Nadgar does not collect or use data for advertising or tracking. Nadgar does not access your location, contacts, calendar, photos, health data, camera, or advertising identifier.</p>
+            <p>Nadgar does not include third-party analytics or advertising SDKs.</p>
+          </section>
+
+          <section class="legal-section">
+            <h3>Diagnostics</h3>
+            <p>Nadgar may write local diagnostic logs such as request status, model names, durations, byte counts, and error messages to help troubleshoot app behavior. These logs are intended not to include your OpenAI API key, raw audio, or full chat content.</p>
+            <p>Apple may separately collect crash reports or diagnostics according to your Apple device settings and Apple's privacy policies.</p>
+          </section>
+
+          <section class="legal-section">
+            <h3>Children's Privacy</h3>
+            <p>Nadgar is not intended for children under 13. The app does not knowingly collect personal information from children.</p>
+          </section>
+
+          <section class="legal-section">
+            <h3>Changes to This Policy</h3>
+            <p>This Privacy Policy may be updated from time to time. The latest version will be available on this page.</p>
+          </section>
+
+          <section class="legal-section">
+            <h3>Contact</h3>
+            <p>For privacy questions, contact: <a href="mailto:support@nadgar.app">support@nadgar.app</a></p>
+          </section>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="footer-inner">
+        <span>Copyright 2026 Krzysztof Wójt</span>
+      </div>
+    </footer>
+  </body>
+</html>

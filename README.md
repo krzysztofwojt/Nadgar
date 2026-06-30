@@ -23,6 +23,14 @@ The raw API key is stored on iPhone in Keychain and synced to the paired Watch, 
 
 The ChatGPT/Codex option is shown in the iPhone UI but disabled. Codex OAuth/access tokens are scoped to Codex workflows, not general OpenAI API calls.
 
+## Website
+
+The public Nadgar website lives in `site/` and is deployed to GitHub Pages by `.github/workflows/pages.yml`.
+
+- Production domain: `https://nadgar.app/`
+- App Store privacy URL: `https://nadgar.app/#privacy`
+- FAQ: `https://nadgar.app/#faq`
+
 ## Requirements
 
 - Full Xcode with iOS 18 and watchOS 11 SDKs.
@@ -99,3 +107,4 @@ For Simulator-only citation rendering checks, run the shared `Nadgar Watch Mock 
 - `Sources/NadgarShared`: shared settings, messages, OpenAI request models, WAV/PCM16 helpers, and legacy Realtime event models.
 - `Tests/NadgarSharedTests`: shared contract tests for full Xcode/Swift test environments.
 - `Tools/NadgarSharedSmokeTests`: small executable smoke test that avoids XCTest/Testing.
+- `site`: static GitHub Pages website for the Nadgar landing page, privacy policy, and FAQ.

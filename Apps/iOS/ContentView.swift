@@ -106,6 +106,11 @@ struct ContentView: View {
                             .foregroundStyle(.red)
                     }
                 }
+
+                Section("About") {
+                    Link("Privacy Policy", destination: NadgarLinks.privacyPolicy)
+                    Link("FAQ", destination: NadgarLinks.faq)
+                }
             }
             .navigationTitle("Nadgar")
             .navigationBarTitleDisplayMode(.inline)
@@ -203,4 +208,9 @@ struct ContentView: View {
             viewModel.setShouldIgnoreSilentModeForAutoRead(newValue)
         }
     }
+}
+
+private enum NadgarLinks {
+    static let privacyPolicy = URL(string: "https://nadgar.app/#privacy")!
+    static let faq = URL(string: "https://nadgar.app/#faq")!
 }
