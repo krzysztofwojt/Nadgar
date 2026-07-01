@@ -423,7 +423,6 @@ a:hover {
 
   .home-stack,
   .site-header,
-  .text-board,
   .text-sheet,
   .site-footer {
     width: min(100% - 24px, 720px);
