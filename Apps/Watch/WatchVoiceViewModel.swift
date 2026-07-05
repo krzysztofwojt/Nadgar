@@ -1121,7 +1121,7 @@ final class WatchVoiceViewModel: ObservableObject {
             conversationKey: conversation.conversationKey,
             contextEpochID: conversation.contextEpochID,
             providerContext: conversation.activeProviderContext,
-            currentSummary: conversation.humanSummary,
+            currentSummary: conversation.humanSummaryForCurrentEpoch,
             messages: messagesToSummarize,
             throughMessageID: throughMessageId,
             settings: settings
