@@ -1135,10 +1135,15 @@ final class WatchVoiceViewModel: ObservableObject {
             ) else { return }
             guard isCurrentConversation(mutationGuard) else { return }
 
+            let hasTransientPlaceholders = messages.contains { $0.isPlaceholder }
             conversation.markSummarized(summary: result.summary, through: result.throughMessageID)
             conversation.setProviderContext(result.providerContext)
             saveConversation()
-            refreshDisplayMessagesFromConversation()
+            if hasTransientPlaceholders {
+                refreshTimelineItems()
+            } else {
+                refreshDisplayMessagesFromConversation()
+            }
             Self.logger.info("conversation summary updated summarizedMessages=\(messagesToSummarize.count, privacy: .public)")
         } catch {
             Self.logger.error("conversation summary update skipped error=\(error.localizedDescription, privacy: .public)")
