@@ -1174,6 +1174,17 @@ final class WatchVoiceViewModel: ObservableObject {
 
     private func clearConversationHistoryFromPhone() -> Bool {
         activeTurnID = UUID()
+        activeRecordingStartID = nil
+        stopAssistantSpeechPlayback()
+        recorder.cancel()
+        isPushToTalkHoldActive = false
+        isRecordingStartPending = false
+        shouldFinishPushToTalkAfterStart = false
+        shouldLockPushToTalkAfterStart = false
+        shouldCancelPushToTalkAfterStart = false
+        isPushToTalkRecording = false
+        isRecordingLocked = false
+        pttState = .ready
         conversation.clearHistory()
         conversationRevision += 1
         do {

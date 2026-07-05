@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 import NadgarShared
 
 @main
@@ -10,7 +13,7 @@ struct WristAssistSessionE2ETests {
             try await runner.run()
             print("PASS all E2E scenarios")
         } catch {
-            fputs("FAIL \(error.localizedDescription)\n", stderr)
+            print("FAIL \(error.localizedDescription)")
             exit(1)
         }
     }
