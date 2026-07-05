@@ -72,6 +72,38 @@ struct WatchConversationStoreTests {
         #expect(!reencodedString.contains("lastResponseId"))
     }
 
+    @Test func providerContextTracksLocalHistoryBootstrapRequirementInMetadata() {
+        var providerContext = ProviderContextState(
+            providerID: AssistantProviderIDs.openAI,
+            lastRemoteTurnID: "resp_123"
+        )
+
+        #expect(!providerContext.requiresLocalHistoryBootstrap)
+
+        providerContext.markRequiresLocalHistoryBootstrap()
+        #expect(providerContext.requiresLocalHistoryBootstrap)
+
+        providerContext.clearLocalHistoryBootstrapRequirement()
+        #expect(!providerContext.requiresLocalHistoryBootstrap)
+        #expect(providerContext.lastRemoteTurnID == "resp_123")
+    }
+
+    @Test func markActiveProviderContextRequiresLocalHistoryBootstrapPreservesRemoteTurnID() {
+        let providerContext = ProviderContextState(
+            providerID: AssistantProviderIDs.openAI,
+            lastRemoteTurnID: "resp_123"
+        )
+        var record = WatchConversationRecord(
+            providerContexts: [AssistantProviderIDs.openAI: providerContext]
+        )
+
+        record.markActiveProviderContextRequiresLocalHistoryBootstrap()
+
+        let updatedContext = record.providerContexts[AssistantProviderIDs.openAI]
+        #expect(updatedContext?.lastRemoteTurnID == "resp_123")
+        #expect(updatedContext?.requiresLocalHistoryBootstrap == true)
+    }
+
     @Test func legacyMessagesWithoutEpochAdoptCurrentEpoch() throws {
         let messageID = UUID()
         let data = """

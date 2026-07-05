@@ -414,13 +414,17 @@ final class WatchVoiceViewModel: ObservableObject {
             let transcript = try await transcribe(file: file, apiKey: apiKey)
             guard activeTurnID == turnID else { return }
 
+            let providerContextBeforeLocalTurn = conversation.activeProviderContext
             let userMessage = updateTranscribingPlaceholder(id: userPlaceholder.id, transcript: transcript)
-            persistMessage(userMessage)
+            persistMessage(userMessage, marksProviderContextDirty: true)
             pttState = .thinking
             assistantPlaceholderID = appendAssistantPlaceholder()
             Self.logger.info("ptt transcript appended characters=\(transcript.count, privacy: .public)")
 
-            let assistantRequest = makeAssistantTurnRequest(userMessage: userMessage)
+            let assistantRequest = makeAssistantTurnRequest(
+                userMessage: userMessage,
+                providerContext: providerContextBeforeLocalTurn
+            )
             let assistantMutationGuard = currentConversationMutationGuard()
             let assistantResult = try await assistantResponse(apiKey: apiKey, request: assistantRequest)
             guard activeTurnID == turnID,
@@ -1072,11 +1076,14 @@ final class WatchVoiceViewModel: ObservableObject {
         messages = Array(messages.suffix(StandalonePTTDefaults.visibleMessagesLimit))
     }
 
-    private func makeAssistantTurnRequest(userMessage: ChatMessage) -> AssistantTurnRequest {
+    private func makeAssistantTurnRequest(
+        userMessage: ChatMessage,
+        providerContext: ProviderContextState? = nil
+    ) -> AssistantTurnRequest {
         AssistantTurnRequest(
             conversationKey: conversation.conversationKey,
             contextEpochID: conversation.contextEpochID,
-            providerContext: conversation.activeProviderContext,
+            providerContext: providerContext ?? conversation.activeProviderContext,
             userMessage: userMessage,
             recentMessages: conversation.currentEpochRawRecoveryMessages,
             humanSummary: conversation.humanSummaryForCurrentEpoch,
@@ -1097,8 +1104,11 @@ final class WatchVoiceViewModel: ObservableObject {
             conversationRevision == guardValue.revision
     }
 
-    private func persistMessage(_ message: ChatMessage) {
+    private func persistMessage(_ message: ChatMessage, marksProviderContextDirty: Bool = false) {
         conversation.appendMessage(message)
+        if marksProviderContextDirty {
+            conversation.markActiveProviderContextRequiresLocalHistoryBootstrap()
+        }
         saveConversation()
         refreshTimelineItems()
     }

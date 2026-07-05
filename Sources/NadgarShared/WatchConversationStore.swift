@@ -167,6 +167,12 @@ public struct WatchConversationRecord: Codable, Equatable, Sendable {
         providerContexts[providerContext.providerID] = providerContext
     }
 
+    public mutating func markActiveProviderContextRequiresLocalHistoryBootstrap() {
+        var providerContext = activeProviderContext ?? ProviderContextState(providerID: activeProviderID)
+        providerContext.markRequiresLocalHistoryBootstrap()
+        providerContexts[providerContext.providerID] = providerContext
+    }
+
     public mutating func rotateModelContext(at date: Date = Date()) {
         contextEpochID = UUID()
         providerContexts[activeProviderID] = ProviderContextState(providerID: activeProviderID)

@@ -1709,12 +1709,14 @@ struct WatchContentView: View {
     }
 
     private func scrollToAssistantResponseTop(_ id: UUID, proxy: ScrollViewProxy, animated: Bool) {
+        let timelineItemID = "message-\(id.uuidString)"
+
         if animated {
             withAnimation(.easeOut(duration: 0.18)) {
-                proxy.scrollTo(id, anchor: .top)
+                proxy.scrollTo(timelineItemID, anchor: .top)
             }
         } else {
-            proxy.scrollTo(id, anchor: .top)
+            proxy.scrollTo(timelineItemID, anchor: .top)
         }
     }
 

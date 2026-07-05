@@ -339,7 +339,8 @@ struct OpenAIResponsesConversationProvider: AssistantConversationProvider {
     func respond(apiKey: String, request: AssistantTurnRequest) async throws -> AssistantTurnResult {
         var providerContext = request.providerContext ?? ProviderContextState(providerID: providerID)
 
-        if let previousResponseID = previousResponseID(in: providerContext) {
+        if !providerContext.requiresLocalHistoryBootstrap,
+           let previousResponseID = previousResponseID(in: providerContext) {
             do {
                 return try await response(
                     apiKey: apiKey,
@@ -404,6 +405,7 @@ struct OpenAIResponsesConversationProvider: AssistantConversationProvider {
         var updatedContext = providerContext
         updatedContext.providerID = providerID
         updatedContext.lastRemoteTurnID = responseID
+        updatedContext.clearLocalHistoryBootstrapRequirement()
 
         return AssistantTurnResult(
             response: result.response,

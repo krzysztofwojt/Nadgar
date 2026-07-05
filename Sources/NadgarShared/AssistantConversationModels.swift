@@ -26,6 +26,24 @@ public struct ProviderContextState: Codable, Equatable, Sendable {
     }
 }
 
+public extension ProviderContextState {
+    var requiresLocalHistoryBootstrap: Bool {
+        metadata[ProviderContextMetadataKeys.requiresLocalHistoryBootstrap] == "true"
+    }
+
+    mutating func markRequiresLocalHistoryBootstrap() {
+        metadata[ProviderContextMetadataKeys.requiresLocalHistoryBootstrap] = "true"
+    }
+
+    mutating func clearLocalHistoryBootstrapRequirement() {
+        metadata.removeValue(forKey: ProviderContextMetadataKeys.requiresLocalHistoryBootstrap)
+    }
+}
+
+private enum ProviderContextMetadataKeys {
+    static let requiresLocalHistoryBootstrap = "requiresLocalHistoryBootstrap"
+}
+
 public struct AssistantTurnRequest: Equatable, Sendable {
     public var conversationKey: String
     public var contextEpochID: UUID
