@@ -111,11 +111,11 @@ struct WatchContentView: View {
             GeometryReader { geometry in
                 ZStack {
                     ScrollView {
-                        VStack(spacing: 8) {
-                            ForEach(viewModel.messages) { message in
-                                messageBubble(message)
+                        LazyVStack(spacing: 8) {
+                            ForEach(viewModel.timelineItems) { item in
+                                timelineItemView(item)
                                     .background {
-                                        if message.id == assistantResponseTopFocusID {
+                                        if timelineItemMessageID(item) == assistantResponseTopFocusID {
                                             GeometryReader { messageProxy in
                                                 Color.clear
                                                     .preference(
@@ -125,7 +125,7 @@ struct WatchContentView: View {
                                             }
                                         }
                                     }
-                                    .id(message.id)
+                                    .id(item.id)
                             }
 
                             Color.clear
@@ -218,18 +218,87 @@ struct WatchContentView: View {
         }
     }
 
-    private func messageBubble(_ message: ChatMessage) -> some View {
-        HStack {
+    @ViewBuilder
+    private func timelineItemView(_ item: ChatTimelineItem) -> some View {
+        switch item {
+        case .notice(let notice):
+            timelineNotice(notice)
+        case .dayDivider(let divider):
+            dayDivider(divider.title)
+        case .message(let timelineMessage):
+            messageBubble(timelineMessage)
+        }
+    }
+
+    @ViewBuilder
+    private func timelineNotice(_ notice: ChatTimelineNotice) -> some View {
+        if isTopHistoryNotice(notice) {
+            Text("••• \(notice.title) •••")
+                .font(.system(size: 10.5, weight: .semibold, design: .rounded))
+                .foregroundStyle(.white.opacity(0.42))
+                .lineLimit(1)
+                .minimumScaleFactor(0.78)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 8)
+                .padding(.top, 30)
+                .padding(.bottom, 10)
+                .frame(maxWidth: .infinity)
+        } else {
+            Text(notice.title)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.white.opacity(0.58))
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .frame(maxWidth: .infinity)
+        }
+    }
+
+    private func isTopHistoryNotice(_ notice: ChatTimelineNotice) -> Bool {
+        notice.id == "notice-summarized-earlier-context" ||
+            notice.id == "notice-earlier-messages-not-shown"
+    }
+
+    private func timelineItemMessageID(_ item: ChatTimelineItem) -> UUID? {
+        guard case .message(let timelineMessage) = item else { return nil }
+        return timelineMessage.message.id
+    }
+
+    private func dayDivider(_ title: String) -> some View {
+        Text(title)
+            .font(.system(size: 11, weight: .semibold, design: .rounded))
+            .foregroundStyle(.white.opacity(0.68))
+            .padding(.horizontal, 9)
+            .padding(.vertical, 4)
+            .background(Color.white.opacity(0.08))
+            .clipShape(Capsule())
+            .frame(maxWidth: .infinity)
+    }
+
+    private func messageBubble(_ timelineMessage: ChatTimelineMessage) -> some View {
+        let message = timelineMessage.message
+
+        return HStack {
             if message.role == .user {
                 Spacer(minLength: 24)
             }
 
-            messageText(message)
-                .padding(.horizontal, 9)
-                .padding(.vertical, 7)
-                .frame(maxWidth: 170, alignment: .leading)
-                .background(message.role == .user ? chatAccentColor : Color.white.opacity(0.14))
-                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            VStack(alignment: message.role == .user ? .trailing : .leading, spacing: 2) {
+                if let userTimestamp = timelineMessage.userTimestamp {
+                    Text(userTimestamp)
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.54))
+                        .monospacedDigit()
+                        .padding(.trailing, 3)
+                }
+
+                messageText(message)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 7)
+                    .frame(maxWidth: 170, alignment: .leading)
+                    .background(message.role == .user ? chatAccentColor : Color.white.opacity(0.14))
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            }
 
             if message.role == .assistant {
                 Spacer(minLength: 24)

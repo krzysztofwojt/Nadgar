@@ -101,6 +101,13 @@ struct ContentView: View {
 
                 Section("Watch") {
                     LabeledContent("Connectivity", value: viewModel.watchStatus)
+                    Button(role: .destructive) {
+                        viewModel.clearConversationHistoryOnWatch()
+                    } label: {
+                        fullWidthButtonLabel("Clear Conversation History")
+                    }
+                    .buttonStyle(.borderless)
+
                     if let lastError = viewModel.lastError {
                         Text(lastError)
                             .foregroundStyle(.red)

@@ -2,7 +2,7 @@ import Foundation
 import os
 import NadgarShared
 
-struct OpenAIResponsesClient {
+struct OpenAIResponsesClient: Sendable {
     private static let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "app.nadgar.Nadgar.watchkitapp",
         category: "OpenAIResponsesClient"
@@ -18,14 +18,73 @@ struct OpenAIResponsesClient {
     func response(
         apiKey: String,
         settings: ProviderSettings,
-        messages: [ChatMessage]
-    ) async throws -> OpenAIAssistantResponse {
-        let request = try request(
+        input: [OpenAIResponsesInputMessage],
+        previousResponseId: String?,
+        store: Bool,
+        enablesCompaction: Bool = true
+    ) async throws -> OpenAIResponsesResult {
+        try await send(
             apiKey: apiKey,
-            settings: settings,
-            messages: messages,
-            stream: false
+            body: OpenAIResponsesRequest(
+                model: settings.model,
+                instructions: settings.instructions,
+                input: input,
+                previousResponseId: previousResponseId,
+                store: store,
+                contextManagement: enablesCompaction ? [OpenAIResponsesContextManagement()] : nil
+            )
         )
+    }
+
+    func summaryText(
+        apiKey: String,
+        settings: ProviderSettings,
+        currentSummary: String?,
+        messages: [ChatMessage]
+    ) async throws -> String {
+        var input: [OpenAIResponsesInputMessage] = [
+            OpenAIResponsesInputMessage(
+                role: "system",
+                content: """
+                Summarize the earlier WristAssist conversation for future context. Keep stable facts, user preferences, unresolved requests, and important decisions. Be concise and do not add new information.
+                """
+            )
+        ]
+
+        if let currentSummary = currentSummary?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !currentSummary.isEmpty {
+            input.append(OpenAIResponsesInputMessage(
+                role: "system",
+                content: "Existing summary to update:\n\(currentSummary)"
+            ))
+        }
+
+        input.append(contentsOf: messages.map(OpenAIResponsesInputMessage.init(message:)))
+
+        return try await send(
+            apiKey: apiKey,
+            body: OpenAIResponsesRequest(
+                model: settings.model,
+                instructions: nil,
+                input: input,
+                store: false,
+                tools: [],
+                toolChoice: "none"
+            )
+        ).text
+    }
+
+    private func send(
+        apiKey: String,
+        body: OpenAIResponsesRequest
+    ) async throws -> OpenAIResponsesResult {
+        var request = URLRequest(url: endpoint)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 60
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        request.httpBody = try JSONEncoder().encode(body)
 
         let (data, response) = try await session.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse else {
@@ -47,7 +106,24 @@ struct OpenAIResponsesClient {
             assistantResponse.text = trimmedText
         }
 
-        return assistantResponse
+        return OpenAIResponsesResult(response: assistantResponse, responseId: decoded.id)
+    }
+
+    func response(
+        apiKey: String,
+        settings: ProviderSettings,
+        messages: [ChatMessage]
+    ) async throws -> OpenAIAssistantResponse {
+        try await response(
+            apiKey: apiKey,
+            settings: settings,
+            input: messages
+                .filter { !$0.isPlaceholder }
+                .map(OpenAIResponsesInputMessage.init(message:)),
+            previousResponseId: nil,
+            store: false,
+            enablesCompaction: false
+        ).response
     }
 
     func streamedResponse(
@@ -196,6 +272,15 @@ struct OpenAIResponsesClient {
     }
 }
 
+struct OpenAIResponsesResult: Equatable, Sendable {
+    var response: OpenAIAssistantResponse
+    var responseId: String?
+
+    var text: String {
+        response.text
+    }
+}
+
 enum WatchOpenAIClientError: LocalizedError, Equatable {
     case invalidResponse
     case openAIError(String)
@@ -213,5 +298,144 @@ enum WatchOpenAIClientError: LocalizedError, Equatable {
         case .emptyResponse:
             return "OpenAI returned an empty response."
         }
+    }
+
+    var isInvalidPreviousResponseID: Bool {
+        guard case .openAIError(let message) = self else { return false }
+        let lowercased = message.lowercased()
+        return lowercased.contains("previous_response_id") ||
+            (lowercased.contains("previous response") && (
+                lowercased.contains("invalid") ||
+                    lowercased.contains("not found") ||
+                    lowercased.contains("could not")
+            ))
+    }
+}
+
+protocol AssistantConversationProvider: Sendable {
+    var providerID: String { get }
+
+    func respond(apiKey: String, request: AssistantTurnRequest) async throws -> AssistantTurnResult
+
+    func summarizeIfNeeded(
+        apiKey: String,
+        request: ConversationSummaryRequest
+    ) async throws -> ConversationSummaryResult?
+}
+
+struct OpenAIResponsesConversationProvider: AssistantConversationProvider {
+    let providerID = AssistantProviderIDs.openAI
+    var client: OpenAIResponsesClient
+    var fallbackContextBuilder: AssistantFallbackContextBuilder
+
+    init(
+        client: OpenAIResponsesClient,
+        fallbackContextBuilder: AssistantFallbackContextBuilder = AssistantFallbackContextBuilder()
+    ) {
+        self.client = client
+        self.fallbackContextBuilder = fallbackContextBuilder
+    }
+
+    func respond(apiKey: String, request: AssistantTurnRequest) async throws -> AssistantTurnResult {
+        var providerContext = request.providerContext ?? ProviderContextState(providerID: providerID)
+
+        if let previousResponseID = previousResponseID(in: providerContext) {
+            do {
+                return try await response(
+                    apiKey: apiKey,
+                    request: request,
+                    input: [OpenAIResponsesInputMessage(message: request.userMessage)],
+                    previousResponseId: previousResponseID,
+                    providerContext: providerContext
+                )
+            } catch let error as WatchOpenAIClientError where error.isInvalidPreviousResponseID {
+                providerContext = ProviderContextState(providerID: providerID)
+            }
+        }
+
+        return try await response(
+            apiKey: apiKey,
+            request: request,
+            input: fallbackContextInput(for: request),
+            previousResponseId: nil,
+            providerContext: providerContext
+        )
+    }
+
+    func summarizeIfNeeded(
+        apiKey: String,
+        request: ConversationSummaryRequest
+    ) async throws -> ConversationSummaryResult? {
+        guard !request.messages.isEmpty else { return nil }
+
+        let summary = try await client.summaryText(
+            apiKey: apiKey,
+            settings: request.settings,
+            currentSummary: request.currentSummary,
+            messages: request.messages
+        )
+        return ConversationSummaryResult(
+            summary: summary,
+            throughMessageID: request.throughMessageID,
+            providerContext: request.providerContext
+        )
+    }
+
+    private func response(
+        apiKey: String,
+        request: AssistantTurnRequest,
+        input: [OpenAIResponsesInputMessage],
+        previousResponseId: String?,
+        providerContext: ProviderContextState
+    ) async throws -> AssistantTurnResult {
+        let result = try await client.response(
+            apiKey: apiKey,
+            settings: request.settings,
+            input: input,
+            previousResponseId: previousResponseId,
+            store: true
+        )
+        guard let responseID = result.responseId?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !responseID.isEmpty
+        else {
+            throw AssistantProviderError.missingContextID
+        }
+
+        var updatedContext = providerContext
+        updatedContext.providerID = providerID
+        updatedContext.lastRemoteTurnID = responseID
+
+        return AssistantTurnResult(
+            response: result.response,
+            providerContext: updatedContext
+        )
+    }
+
+    private func fallbackContextInput(for request: AssistantTurnRequest) -> [OpenAIResponsesInputMessage] {
+        let fallbackContext = fallbackContextBuilder.build(for: request)
+        var input: [OpenAIResponsesInputMessage] = []
+
+        if let summary = fallbackContext.summary {
+            input.append(OpenAIResponsesInputMessage(
+                role: "system",
+                content: "Earlier conversation summary:\n\(summary)"
+            ))
+        }
+
+        input.append(contentsOf: fallbackContext.messages.map(OpenAIResponsesInputMessage.init(message:)))
+        input.append(OpenAIResponsesInputMessage(message: fallbackContext.userMessage))
+
+        return input
+    }
+
+    private func previousResponseID(in providerContext: ProviderContextState) -> String? {
+        providerContext.lastRemoteTurnID?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty ??
+            providerContext.contextID?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+    }
+}
+
+private extension String {
+    var nilIfEmpty: String? {
+        isEmpty ? nil : self
     }
 }

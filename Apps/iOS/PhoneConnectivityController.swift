@@ -93,6 +93,14 @@ final class PhoneConnectivityController: NSObject, WCSessionDelegate {
         )
     }
 
+    @discardableResult
+    func sendClearConversationHistoryToWatch() -> Bool {
+        sendMessageToReachableWatch(
+            .clearConversationHistory,
+            unavailableStatus: "Open WristAssist on Apple Watch to clear conversation history."
+        )
+    }
+
     func session(
         _ session: WCSession,
         activationDidCompleteWith activationState: WCSessionActivationState,
@@ -203,6 +211,18 @@ final class PhoneConnectivityController: NSObject, WCSessionDelegate {
                 }
                 return [:]
 
+            case .conversationHistoryCleared:
+                await MainActor.run {
+                    statusHandler("Watch: conversation history cleared")
+                }
+                return [:]
+
+            case .error(let message):
+                await MainActor.run {
+                    errorHandler(message)
+                }
+                return [:]
+
             case .reportConnectionState(let state):
                 await MainActor.run {
                     statusHandler("Watch: \(state.displayName)")
@@ -234,7 +254,7 @@ final class PhoneConnectivityController: NSObject, WCSessionDelegate {
         case .openURL(let urlString):
             return await openURL(urlString)
         case .requestConfiguration, .requestSettings, .keyStatusRequest, .keyStatusResponse,
-                .reportConnectionState, .noPendingOpenURL:
+                .reportConnectionState, .noPendingOpenURL, .conversationHistoryCleared, .error:
             return nil
         }
     }
@@ -269,7 +289,8 @@ final class PhoneConnectivityController: NSObject, WCSessionDelegate {
             _ = await openURL(urlString)
         case .noPendingOpenURL:
             return
-        case .requestConfiguration, .requestSettings, .keyStatusRequest, .keyStatusResponse, .reportConnectionState:
+        case .requestConfiguration, .requestSettings, .keyStatusRequest, .keyStatusResponse,
+                .reportConnectionState, .conversationHistoryCleared, .error:
             return
         }
     }
@@ -377,9 +398,18 @@ final class PhoneConnectivityController: NSObject, WCSessionDelegate {
                             watchKeyStatusHandler(hasKey)
                             statusHandler(hasKey ? "Watch: API key synced" : "Watch: API key deleted")
                         }
-                    case .keyStatusRequest, .requestConfiguration, .requestSettings, .reportConnectionState, .openURL, .noPendingOpenURL:
+                    case .conversationHistoryCleared:
                         Task { @MainActor in
-                            errorHandler("Apple Watch returned an unexpected key-sync reply.")
+                            statusHandler("Watch: conversation history cleared")
+                        }
+                    case .error(let message):
+                        Task { @MainActor in
+                            errorHandler(message)
+                        }
+                    case .keyStatusRequest, .requestConfiguration, .requestSettings, .reportConnectionState,
+                            .openURL, .noPendingOpenURL:
+                        Task { @MainActor in
+                            errorHandler("Apple Watch returned an unexpected reply.")
                         }
                     }
                 } catch {

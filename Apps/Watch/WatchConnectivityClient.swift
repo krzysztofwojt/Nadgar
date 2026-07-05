@@ -7,6 +7,7 @@ final class WatchConnectivityClient: NSObject, WCSessionDelegate {
     var onSettingsChanged: (@MainActor (ProviderSettings) -> Void)?
     var onSyncAPIKey: (@MainActor (String) -> Bool)?
     var onDeleteAPIKey: (@MainActor () -> Bool)?
+    var onClearConversationHistory: (@MainActor () -> Bool)?
     var hasLocalAPIKey: (@MainActor () -> Bool)?
     private let pendingOpenURLLock = NSLock()
     private var pendingOpenURLString: String?
@@ -24,7 +25,8 @@ final class WatchConnectivityClient: NSObject, WCSessionDelegate {
             return configuration.settings
         case .settingsChanged(let settings):
             return settings
-        case .syncAPIKey, .deleteAPIKey, .keyStatusResponse, .requestPendingOpenURL, .openURLResult:
+        case .syncAPIKey, .deleteAPIKey, .clearConversationHistory, .keyStatusResponse,
+                .requestPendingOpenURL, .openURLResult:
             _ = await handlePhoneMessage(reply)
             return .default
         case .error(let message), .authUnavailable(let message):
@@ -42,7 +44,8 @@ final class WatchConnectivityClient: NSObject, WCSessionDelegate {
                 hasLocalAPIKey?() ?? settings.hasAPIKey
             }
             return WatchConfiguration(settings: settings, hasAPIKey: hasKey)
-        case .syncAPIKey, .deleteAPIKey, .keyStatusResponse, .requestPendingOpenURL, .openURLResult:
+        case .syncAPIKey, .deleteAPIKey, .clearConversationHistory, .keyStatusResponse,
+                .requestPendingOpenURL, .openURLResult:
             _ = await handlePhoneMessage(reply)
             let hasKey = await MainActor.run {
                 hasLocalAPIKey?() ?? false
@@ -72,7 +75,8 @@ final class WatchConnectivityClient: NSObject, WCSessionDelegate {
                 guard success else {
                     throw WatchConnectivityClientError.remote(message ?? "iPhone could not open this source.")
                 }
-            case .configurationChanged, .settingsChanged, .syncAPIKey, .deleteAPIKey, .keyStatusResponse, .requestPendingOpenURL:
+            case .configurationChanged, .settingsChanged, .syncAPIKey, .deleteAPIKey,
+                    .clearConversationHistory, .keyStatusResponse, .requestPendingOpenURL:
                 _ = await handlePhoneMessage(reply)
                 throw WatchConnectivityClientError.unexpectedReply
             case .error(let message), .authUnavailable(let message):
@@ -158,6 +162,9 @@ final class WatchConnectivityClient: NSObject, WCSessionDelegate {
         case .deleteAPIKey:
             let hasKey = onDeleteAPIKey?() ?? (hasLocalAPIKey?() ?? false)
             return .keyStatusResponse(hasKey: hasKey)
+        case .clearConversationHistory:
+            let didClear = onClearConversationHistory?() ?? false
+            return didClear ? .conversationHistoryCleared : .error("Could not clear conversation history.")
         case .keyStatusResponse(let hasKey):
             guard !hasKey else { return nil }
             let remainingKey = onDeleteAPIKey?() ?? (hasLocalAPIKey?() ?? false)

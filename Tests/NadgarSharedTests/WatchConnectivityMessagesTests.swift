@@ -60,6 +60,15 @@ struct WatchConnectivityMessagesTests {
         #expect(decoded == original)
     }
 
+    @Test func phoneClearConversationHistoryRoundTripsThroughDictionaryEnvelope() throws {
+        let original = PhoneToWatchMessage.clearConversationHistory
+
+        let envelope = try MessageEnvelope(dictionary: original.envelope().dictionary())
+        let decoded = try PhoneToWatchMessage(envelope: envelope)
+
+        #expect(decoded == original)
+    }
+
     @Test func phoneKeyStatusResponseRoundTripsThroughDictionaryEnvelope() throws {
         let original = PhoneToWatchMessage.keyStatusResponse(hasKey: true)
 
@@ -132,8 +141,26 @@ struct WatchConnectivityMessagesTests {
         #expect(decoded == original)
     }
 
+    @Test func watchConversationHistoryClearedRoundTripsThroughDictionaryEnvelope() throws {
+        let original = WatchToPhoneMessage.conversationHistoryCleared
+
+        let envelope = try MessageEnvelope(dictionary: original.envelope().dictionary())
+        let decoded = try WatchToPhoneMessage(envelope: envelope)
+
+        #expect(decoded == original)
+    }
+
     @Test func watchNoPendingOpenURLRoundTripsThroughDictionaryEnvelope() throws {
         let original = WatchToPhoneMessage.noPendingOpenURL
+
+        let envelope = try MessageEnvelope(dictionary: original.envelope().dictionary())
+        let decoded = try WatchToPhoneMessage(envelope: envelope)
+
+        #expect(decoded == original)
+    }
+
+    @Test func watchErrorRoundTripsThroughDictionaryEnvelope() throws {
+        let original = WatchToPhoneMessage.error("Could not clear history.")
 
         let envelope = try MessageEnvelope(dictionary: original.envelope().dictionary())
         let decoded = try WatchToPhoneMessage(envelope: envelope)

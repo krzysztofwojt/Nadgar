@@ -45,6 +45,7 @@ public enum PhoneToWatchMessage: Equatable, Sendable {
     case settingsChanged(ProviderSettings)
     case syncAPIKey(String)
     case deleteAPIKey
+    case clearConversationHistory
     case keyStatusResponse(hasKey: Bool)
     case requestPendingOpenURL
     case openURLResult(success: Bool, message: String?)
@@ -61,6 +62,8 @@ public enum PhoneToWatchMessage: Equatable, Sendable {
             return try MessageEnvelope(type: "syncAPIKey", payload: encode(APIKeyPayload(apiKey: apiKey)))
         case .deleteAPIKey:
             return MessageEnvelope(type: "deleteAPIKey")
+        case .clearConversationHistory:
+            return MessageEnvelope(type: "clearConversationHistory")
         case .keyStatusResponse(let hasKey):
             return try MessageEnvelope(type: "keyStatusResponse", payload: encode(KeyStatusPayload(hasKey: hasKey)))
         case .requestPendingOpenURL:
@@ -87,6 +90,8 @@ public enum PhoneToWatchMessage: Equatable, Sendable {
             self = .syncAPIKey(try decodePayload(APIKeyPayload.self, from: envelope).apiKey)
         case "deleteAPIKey":
             self = .deleteAPIKey
+        case "clearConversationHistory":
+            self = .clearConversationHistory
         case "keyStatusResponse":
             self = .keyStatusResponse(hasKey: try decodePayload(KeyStatusPayload.self, from: envelope).hasKey)
         case "requestPendingOpenURL":
@@ -112,6 +117,8 @@ public enum WatchToPhoneMessage: Equatable, Sendable {
     case reportConnectionState(RealtimeConnectionState)
     case openURL(String)
     case noPendingOpenURL
+    case conversationHistoryCleared
+    case error(String)
 
     public func envelope() throws -> MessageEnvelope {
         switch self {
@@ -129,6 +136,10 @@ public enum WatchToPhoneMessage: Equatable, Sendable {
             return try MessageEnvelope(type: "openURL", payload: encode(URLPayload(url: url)))
         case .noPendingOpenURL:
             return MessageEnvelope(type: "noPendingOpenURL")
+        case .conversationHistoryCleared:
+            return MessageEnvelope(type: "conversationHistoryCleared")
+        case .error(let message):
+            return try MessageEnvelope(type: "error", payload: encode(MessagePayload(message: message)))
         }
     }
 
@@ -148,6 +159,10 @@ public enum WatchToPhoneMessage: Equatable, Sendable {
             self = .openURL(try decodePayload(URLPayload.self, from: envelope).url)
         case "noPendingOpenURL":
             self = .noPendingOpenURL
+        case "conversationHistoryCleared":
+            self = .conversationHistoryCleared
+        case "error":
+            self = .error(try decodePayload(MessagePayload.self, from: envelope).message)
         default:
             throw MessageCodingError.unknownType(envelope.type)
         }

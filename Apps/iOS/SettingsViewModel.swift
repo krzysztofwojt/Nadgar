@@ -214,6 +214,15 @@ final class SettingsViewModel: ObservableObject {
         connectivity?.sendSettings(currentSettings())
     }
 
+    func clearConversationHistoryOnWatch() {
+        guard connectivity?.sendClearConversationHistoryToWatch() == true else {
+            watchStatus = "Open WristAssist on Apple Watch to clear conversation history."
+            return
+        }
+
+        watchStatus = "Clear conversation request sent"
+    }
+
     var hasUnsavedAPIKeyChanges: Bool {
         normalizedAPIKey(apiKeyDraft) != normalizedAPIKey(savedAPIKey)
     }

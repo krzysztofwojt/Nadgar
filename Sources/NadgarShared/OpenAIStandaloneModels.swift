@@ -9,25 +9,58 @@ public struct OpenAIResponsesRequest: Encodable, Equatable, Sendable {
     public var stream: Bool
     public var tools: [OpenAIResponsesTool]
     public var toolChoice: String
+    public var previousResponseId: String?
+    public var contextManagement: [OpenAIResponsesContextManagement]?
     public var input: [OpenAIResponsesInputMessage]
 
     public init(
         model: String = StandalonePTTDefaults.assistantModel,
         instructions: String?,
         messages: [ChatMessage],
+        previousResponseId: String? = nil,
+        store: Bool = false,
+        contextManagement: [OpenAIResponsesContextManagement]? = nil,
+        tools: [OpenAIResponsesTool] = [OpenAIResponsesTool(type: "web_search")],
+        toolChoice: String = "auto",
+        stream: Bool = false
+    ) {
+        self.init(
+            model: model,
+            instructions: instructions,
+            input: messages
+                .filter { !$0.isPlaceholder }
+                .map(OpenAIResponsesInputMessage.init(message:)),
+            previousResponseId: previousResponseId,
+            store: store,
+            contextManagement: contextManagement,
+            tools: tools,
+            toolChoice: toolChoice,
+            stream: stream
+        )
+    }
+
+    public init(
+        model: String = StandalonePTTDefaults.assistantModel,
+        instructions: String?,
+        input: [OpenAIResponsesInputMessage],
+        previousResponseId: String? = nil,
+        store: Bool = false,
+        contextManagement: [OpenAIResponsesContextManagement]? = nil,
+        tools: [OpenAIResponsesTool] = [OpenAIResponsesTool(type: "web_search")],
+        toolChoice: String = "auto",
         stream: Bool = false
     ) {
         self.model = model
         self.instructions = instructions?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
         self.reasoning = OpenAIReasoningOptions(effort: "low")
         self.text = OpenAITextOptions(verbosity: "low")
-        self.store = false
+        self.store = store
         self.stream = stream
-        self.tools = [OpenAIResponsesTool(type: "web_search")]
-        self.toolChoice = "auto"
-        self.input = messages
-            .filter { !$0.isPlaceholder }
-            .map(OpenAIResponsesInputMessage.init(message:))
+        self.tools = tools
+        self.toolChoice = toolChoice
+        self.previousResponseId = previousResponseId?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+        self.contextManagement = contextManagement
+        self.input = input
     }
 
     enum CodingKeys: String, CodingKey {
@@ -39,6 +72,8 @@ public struct OpenAIResponsesRequest: Encodable, Equatable, Sendable {
         case stream
         case tools
         case toolChoice = "tool_choice"
+        case previousResponseId = "previous_response_id"
+        case contextManagement = "context_management"
         case input
     }
 
@@ -54,7 +89,24 @@ public struct OpenAIResponsesRequest: Encodable, Equatable, Sendable {
         }
         try container.encode(tools, forKey: .tools)
         try container.encode(toolChoice, forKey: .toolChoice)
+        try container.encodeIfPresent(previousResponseId, forKey: .previousResponseId)
+        try container.encodeIfPresent(contextManagement, forKey: .contextManagement)
         try container.encode(input, forKey: .input)
+    }
+}
+
+public struct OpenAIResponsesContextManagement: Codable, Equatable, Sendable {
+    public var type: String
+    public var compactThreshold: Int
+
+    public init(type: String = "compaction", compactThreshold: Int = StandalonePTTDefaults.compactThreshold) {
+        self.type = type
+        self.compactThreshold = compactThreshold
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case type
+        case compactThreshold = "compact_threshold"
     }
 }
 
@@ -86,6 +138,11 @@ public struct OpenAIResponsesInputMessage: Codable, Equatable, Sendable {
     public var role: String
     public var content: String
 
+    public init(role: String, content: String) {
+        self.role = role
+        self.content = content
+    }
+
     public init(role: ChatMessageRole, content: String) {
         self.role = role.rawValue
         self.content = content
@@ -97,10 +154,12 @@ public struct OpenAIResponsesInputMessage: Codable, Equatable, Sendable {
 }
 
 public struct OpenAIResponsesResponse: Decodable, Equatable, Sendable {
+    public var id: String?
     public var outputText: String?
     public var output: [OpenAIResponsesOutputItem]
 
-    public init(outputText: String? = nil, output: [OpenAIResponsesOutputItem] = []) {
+    public init(id: String? = nil, outputText: String? = nil, output: [OpenAIResponsesOutputItem] = []) {
+        self.id = id
         self.outputText = outputText
         self.output = output
     }
@@ -162,12 +221,14 @@ public struct OpenAIResponsesResponse: Decodable, Equatable, Sendable {
     }
 
     enum CodingKeys: String, CodingKey {
+        case id
         case outputText = "output_text"
         case output
     }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = (try? container.decodeIfPresent(String.self, forKey: .id)) ?? nil
         self.outputText = (try? container.decodeIfPresent(String.self, forKey: .outputText)) ?? nil
         self.output = (try? container.decodeIfPresent([OpenAIResponsesOutputItem].self, forKey: .output)) ?? []
     }
