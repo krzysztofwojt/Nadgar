@@ -563,7 +563,7 @@ final class WatchVoiceViewModel: ObservableObject {
         recorder.cleanupTemporaryFiles()
         conversation.rotateModelContext()
         saveConversation()
-        refreshTimelineItems()
+        refreshDisplayMessagesFromConversation()
         isPushToTalkHoldActive = false
         isRecordingStartPending = false
         shouldFinishPushToTalkAfterStart = false
