@@ -17,6 +17,10 @@ let package = Package(
         .executable(
             name: "NadgarSharedSmokeTests",
             targets: ["NadgarSharedSmokeTests"]
+        ),
+        .executable(
+            name: "WristAssistSessionE2ETests",
+            targets: ["WristAssistSessionE2ETests"]
         )
     ],
     targets: [
@@ -33,6 +37,11 @@ let package = Package(
             name: "NadgarSharedSmokeTests",
             dependencies: ["NadgarShared"],
             path: "Tools/NadgarSharedSmokeTests"
+        ),
+        .executableTarget(
+            name: "WristAssistSessionE2ETests",
+            dependencies: ["NadgarShared"],
+            path: "Tools/WristAssistSessionE2ETests"
         )
     ]
 )

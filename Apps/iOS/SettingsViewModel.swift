@@ -77,6 +77,7 @@ final class SettingsViewModel: ObservableObject {
         guard connectivity == nil else {
             sendSettingsToWatch()
             connectivity?.sendCurrentKeyStateToReachableWatch()
+            connectivity?.sendPendingConversationClearToReachableWatch()
             return
         }
 
@@ -89,6 +90,9 @@ final class SettingsViewModel: ObservableObject {
             },
             pendingWatchKeyDeletionProvider: { [weak self] in
                 self?.pendingWatchKeyDeletion ?? false
+            },
+            pendingConversationClearProvider: { [weak self] in
+                self?.pendingWatchConversationClear ?? false
             },
             statusHandler: { [weak self] status in
                 Task { @MainActor in
@@ -110,6 +114,7 @@ final class SettingsViewModel: ObservableObject {
         controller.activate()
         sendSettingsToWatch()
         controller.sendCurrentKeyStateToReachableWatch()
+        controller.sendPendingConversationClearToReachableWatch()
     }
 
     func saveAPIKeyDraft() async {
@@ -212,6 +217,17 @@ final class SettingsViewModel: ObservableObject {
 
     func sendSettingsToWatch() {
         connectivity?.sendSettings(currentSettings())
+    }
+
+    func clearConversationHistoryOnWatch() {
+        pendingWatchConversationClear = true
+
+        guard connectivity?.sendClearConversationHistoryToWatch() == true else {
+            watchStatus = "Open WristAssist on Apple Watch to clear conversation history."
+            return
+        }
+
+        watchStatus = "Clear conversation request sent"
     }
 
     var hasUnsavedAPIKeyChanges: Bool {
@@ -319,6 +335,7 @@ final class SettingsViewModel: ObservableObject {
 
     private static let settingsKey = "ProviderSettings"
     private static let pendingWatchKeyDeletionKey = "PendingWatchAPIKeyDeletion"
+    private static let pendingWatchConversationClearKey = "PendingWatchConversationClear"
 
     private var pendingWatchKeyDeletion: Bool {
         get {
@@ -326,6 +343,15 @@ final class SettingsViewModel: ObservableObject {
         }
         set {
             settingsStore.set(newValue, forKey: Self.pendingWatchKeyDeletionKey)
+        }
+    }
+
+    private var pendingWatchConversationClear: Bool {
+        get {
+            settingsStore.bool(forKey: Self.pendingWatchConversationClearKey)
+        }
+        set {
+            settingsStore.set(newValue, forKey: Self.pendingWatchConversationClearKey)
         }
     }
 
@@ -356,6 +382,13 @@ final class SettingsViewModel: ObservableObject {
     }
 
     private func applyWatchStatus(_ status: String) {
+        if status == "Watch: conversation history cleared" {
+            pendingWatchConversationClear = false
+            watchStatus = status
+            lastError = nil
+            return
+        }
+
         if pendingWatchKeyDeletion && status == "Watch: API key synced" {
             watchStatus = "Open Nadgar on Apple Watch to finish deleting the key there."
             lastError = nil

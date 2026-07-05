@@ -21,6 +21,7 @@ final class WatchVoiceViewModel: ObservableObject {
     @Published private(set) var settings: ProviderSettings
     @Published private(set) var errorMessage: String?
     @Published private(set) var messages: [ChatMessage]
+    @Published private(set) var timelineItems: [ChatTimelineItem]
     @Published private(set) var isPushToTalkRecording = false
     @Published private(set) var isRecordingLocked = false
 
@@ -51,7 +52,12 @@ final class WatchVoiceViewModel: ObservableObject {
     private let responsesClient: OpenAIResponsesClient
     private let speechClient: OpenAISpeechClient
     private let speechAudioPipeline: WatchAudioPipeline
+    private let assistantProvider: any AssistantConversationProvider
+    private let conversationStore: WatchConversationStore
+    private let timelineFormatter: ChatTimelineFormatter
     private let openAITestMode: WatchOpenAITestMode
+    private var conversation: WatchConversationRecord
+    private var conversationRevision = 0
     private var apiKey: String?
     private var speechPlaybackTask: Task<Void, Never>?
     private var speechPlaybackID: UUID?
@@ -71,6 +77,11 @@ final class WatchVoiceViewModel: ObservableObject {
         var previousIndex: Int?
     }
 
+    private struct ConversationMutationGuard {
+        var contextEpochID: UUID
+        var revision: Int
+    }
+
     init(
         connectivity: WatchConnectivityClient = WatchConnectivityClient(),
         configurationStore: WatchConfigurationStore = WatchConfigurationStore(),
@@ -79,9 +90,27 @@ final class WatchVoiceViewModel: ObservableObject {
         responsesClient: OpenAIResponsesClient = OpenAIResponsesClient(),
         speechClient: OpenAISpeechClient = OpenAISpeechClient(),
         speechAudioPipeline: WatchAudioPipeline = WatchAudioPipeline(),
+        assistantProvider: (any AssistantConversationProvider)? = nil,
+        conversationStore: WatchConversationStore? = nil,
         openAITestMode: WatchOpenAITestMode = .current
     ) {
         let localConfiguration = configurationStore.loadConfiguration()
+        let resolvedConversationStore = conversationStore ?? Self.defaultConversationStore()
+        let loadedConversation: WatchConversationRecord
+        let conversationLoadError: Error?
+        do {
+            loadedConversation = try resolvedConversationStore.load()
+            conversationLoadError = nil
+        } catch {
+            loadedConversation = WatchConversationRecord()
+            conversationLoadError = error
+        }
+        let timelineFormatter = ChatTimelineFormatter()
+        let mockInitialMessages = openAITestMode.initialMessages()
+        let initialConversation = openAITestMode.isEnabled
+            ? WatchConversationRecord(messages: mockInitialMessages)
+            : loadedConversation
+        let displayMessages = initialConversation.displayMessages
 
         self.connectivity = connectivity
         self.configurationStore = configurationStore
@@ -90,12 +119,24 @@ final class WatchVoiceViewModel: ObservableObject {
         self.responsesClient = responsesClient
         self.speechClient = speechClient
         self.speechAudioPipeline = speechAudioPipeline
+        self.assistantProvider = assistantProvider ?? OpenAIResponsesConversationProvider(client: responsesClient)
+        self.conversationStore = resolvedConversationStore
+        self.timelineFormatter = timelineFormatter
         self.openAITestMode = openAITestMode
         self.remainingMockTranscriptionFailures = openAITestMode.transcriptionFailuresBeforeSuccess
+        self.conversation = initialConversation
         self.pttState = .ready
         self.settings = localConfiguration.settings
         self.apiKey = openAITestMode.apiKeyOverride ?? (try? configurationStore.loadAPIKey())
-        self.messages = openAITestMode.initialMessages()
+        self.messages = displayMessages
+        self.timelineItems = timelineFormatter.items(
+            for: displayMessages,
+            hasEarlierMessages: initialConversation.messages.count > displayMessages.count,
+            hasSummarizedEarlierContext: initialConversation.hasSummarizedEarlierContext,
+            lastContextResetAt: initialConversation.lastContextResetAt,
+            events: initialConversation.events
+        )
+        self.errorMessage = conversationLoadError?.localizedDescription
 
         self.recorder.cleanupTemporaryFiles()
 
@@ -114,6 +155,9 @@ final class WatchVoiceViewModel: ObservableObject {
         }
         connectivity.onDeleteAPIKey = { [weak self] in
             self?.deleteAPIKeyFromWatch() ?? false
+        }
+        connectivity.onClearConversationHistory = { [weak self] in
+            self?.clearConversationHistoryFromPhone() ?? false
         }
         connectivity.hasLocalAPIKey = { [weak self] in
             self?.hasAPIKey ?? false
@@ -370,22 +414,32 @@ final class WatchVoiceViewModel: ObservableObject {
             let transcript = try await transcribe(file: file, apiKey: apiKey)
             guard activeTurnID == turnID else { return }
 
-            updateTranscribingPlaceholder(id: userPlaceholder.id, transcript: transcript)
+            let providerContextBeforeLocalTurn = conversation.activeProviderContext
+            let userMessage = updateTranscribingPlaceholder(id: userPlaceholder.id, transcript: transcript)
+            persistMessage(userMessage, marksProviderContextDirty: true)
             pttState = .thinking
             assistantPlaceholderID = appendAssistantPlaceholder()
             Self.logger.info("ptt transcript appended characters=\(transcript.count, privacy: .public)")
 
-            let assistantResponse = try await streamAssistantResponse(
-                apiKey: apiKey,
-                messages: messages,
-                placeholderID: assistantPlaceholderID,
-                turnID: turnID
+            let assistantRequest = makeAssistantTurnRequest(
+                userMessage: userMessage,
+                providerContext: providerContextBeforeLocalTurn
             )
-            guard activeTurnID == turnID else { return }
+            let assistantMutationGuard = currentConversationMutationGuard()
+            let assistantResult = try await assistantResponse(apiKey: apiKey, request: assistantRequest)
+            guard activeTurnID == turnID,
+                  isCurrentConversation(assistantMutationGuard)
+            else { return }
 
+            let assistantMessage = updateAssistantPlaceholder(id: assistantPlaceholderID, response: assistantResult.response)
+            persistAssistantMessage(assistantMessage, providerContext: assistantResult.providerContext)
+            startAssistantSpeechPlaybackIfNeeded(apiKey: apiKey)
+            enqueueAssistantSpeechText(assistantResult.response.text)
+            finishAssistantSpeechPlaybackInput()
             pttState = .ready
             errorMessage = nil
-            Self.logger.info("ptt assistant response appended characters=\(assistantResponse.text.count, privacy: .public) citations=\(assistantResponse.citations.count, privacy: .public)")
+            await updateSummaryIfNeeded(apiKey: apiKey)
+            Self.logger.info("ptt assistant response appended characters=\(assistantResult.response.text.count, privacy: .public) citations=\(assistantResult.response.citations.count, privacy: .public)")
         } catch {
             guard activeTurnID == turnID else { return }
             let failureDescription = error.localizedDescription
@@ -511,7 +565,9 @@ final class WatchVoiceViewModel: ObservableObject {
         stopAssistantSpeechPlayback()
         recorder.cancel()
         recorder.cleanupTemporaryFiles()
-        messages.removeAll()
+        conversation.rotateModelContext()
+        saveConversation()
+        refreshDisplayMessagesFromConversation()
         isPushToTalkHoldActive = false
         isRecordingStartPending = false
         shouldFinishPushToTalkAfterStart = false
@@ -565,6 +621,23 @@ final class WatchVoiceViewModel: ObservableObject {
             errorMessage = message
             return message
         }
+    }
+
+    private func assistantResponse(apiKey: String, request: AssistantTurnRequest) async throws -> AssistantTurnResult {
+        if openAITestMode.isEnabled {
+            await openAITestMode.simulateResponseDelay()
+            let turnNumber = conversation.messages.filter { $0.role == .user && !$0.isPlaceholder }.count
+            let remoteTurnID = "mock-response-\(turnNumber)"
+            return AssistantTurnResult(
+                response: openAITestMode.assistantResponse(turnNumber: turnNumber),
+                providerContext: ProviderContextState(
+                    providerID: assistantProvider.providerID,
+                    lastRemoteTurnID: remoteTurnID
+                )
+            )
+        }
+
+        return try await assistantProvider.respond(apiKey: apiKey, request: request)
     }
 
     private func assistantResponse(apiKey: String, messages: [ChatMessage]) async throws -> OpenAIAssistantResponse {
@@ -630,7 +703,7 @@ final class WatchVoiceViewModel: ObservableObject {
                     if streamedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         enqueueAssistantSpeechChunks(speechChunker.append(response.text))
                     }
-                    updateAssistantPlaceholder(id: placeholderID, response: response)
+                    _ = updateAssistantPlaceholder(id: placeholderID, response: response)
                     finalResponse = response
                 } else if !streamedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     Self.logger.info("ptt stream completed without final text; keeping streamed text")
@@ -643,14 +716,14 @@ final class WatchVoiceViewModel: ObservableObject {
             guard !trimmedText.isEmpty else {
                 Self.logger.error("ptt stream ended without text or completion; falling back to full response")
                 let fallbackResponse = try await assistantResponse(apiKey: apiKey, messages: messages)
-                updateAssistantPlaceholder(id: placeholderID, response: fallbackResponse)
+                _ = updateAssistantPlaceholder(id: placeholderID, response: fallbackResponse)
                 enqueueAssistantSpeechText(fallbackResponse.text)
                 Self.logger.info("ptt full response fallback succeeded characters=\(fallbackResponse.text.count, privacy: .public) citations=\(fallbackResponse.citations.count, privacy: .public)")
                 return fallbackResponse
             }
 
             let response = OpenAIAssistantResponse(text: trimmedText)
-            updateAssistantPlaceholder(id: placeholderID, response: response)
+            _ = updateAssistantPlaceholder(id: placeholderID, response: response)
             Self.logger.info("ptt stream ended without completion; using streamed text characters=\(trimmedText.count, privacy: .public)")
             return response
         }
@@ -786,6 +859,7 @@ final class WatchVoiceViewModel: ObservableObject {
             reusedMessage.isPlaceholder = true
             updatedMessages.append(reusedMessage)
             messages = updatedMessages
+            refreshTimelineItems()
             return TranscribingPlaceholderReservation(
                 id: previousMessage.id,
                 previousMessage: previousMessage,
@@ -799,6 +873,7 @@ final class WatchVoiceViewModel: ObservableObject {
             isPlaceholder: true
         )
         messages.append(message)
+        refreshTimelineItems()
         return TranscribingPlaceholderReservation(id: message.id, previousMessage: nil, previousIndex: nil)
     }
 
@@ -827,6 +902,7 @@ final class WatchVoiceViewModel: ObservableObject {
             let insertionIndex = min(reservation.previousIndex ?? updatedMessages.count, updatedMessages.count)
             updatedMessages.insert(previousMessage, at: insertionIndex)
             messages = updatedMessages
+            refreshTimelineItems()
         } else {
             removeMessage(id: reservation.id)
         }
@@ -865,13 +941,11 @@ final class WatchVoiceViewModel: ObservableObject {
         return "\(Self.recordingStartFailedPrefix): \(trimmedDescription)"
     }
 
-    private func updateTranscribingPlaceholder(id: UUID, transcript: String) {
-        updateMessage(id: id) { message in
-            message.text = transcript
-            message.isPlaceholder = false
-        } fallback: {
-            self.messages.append(ChatMessage(id: id, role: .user, text: transcript))
-        }
+    private func updateTranscribingPlaceholder(id: UUID, transcript: String) -> ChatMessage {
+        let createdAt = messages.first(where: { $0.id == id })?.createdAt ?? Date()
+        let message = ChatMessage(id: id, role: .user, text: transcript, createdAt: createdAt)
+        upsertDisplayMessage(message)
+        return message
     }
 
     private func failTranscribingPlaceholder(id: UUID, errorDescription: String) {
@@ -884,6 +958,7 @@ final class WatchVoiceViewModel: ObservableObject {
             )
             message.isPlaceholder = true
         }
+        refreshTimelineItems()
     }
 
     private func appendAssistantPlaceholder() -> UUID {
@@ -893,22 +968,27 @@ final class WatchVoiceViewModel: ObservableObject {
             isPlaceholder: true
         )
         messages.append(message)
+        refreshTimelineItems()
         return message.id
     }
 
-    private func updateAssistantPlaceholder(id: UUID?, response: OpenAIAssistantResponse) {
+    private func updateAssistantPlaceholder(id: UUID?, response: OpenAIAssistantResponse) -> ChatMessage {
         guard let id else {
-            messages.append(ChatMessage(role: .assistant, text: response.text, citations: response.citations))
-            return
+            let message = ChatMessage(role: .assistant, text: response.text, citations: response.citations)
+            upsertDisplayMessage(message)
+            return message
         }
 
-        updateMessage(id: id) { message in
-            message.text = response.text
-            message.citations = response.citations
-            message.isPlaceholder = false
-        } fallback: {
-            self.messages.append(ChatMessage(role: .assistant, text: response.text, citations: response.citations))
-        }
+        let createdAt = messages.first(where: { $0.id == id })?.createdAt ?? Date()
+        let message = ChatMessage(
+            id: id,
+            role: .assistant,
+            text: response.text,
+            createdAt: createdAt,
+            citations: response.citations
+        )
+        upsertDisplayMessage(message)
+        return message
     }
 
     private func appendAssistantTextDelta(id: UUID?, delta: String) {
@@ -949,6 +1029,7 @@ final class WatchVoiceViewModel: ObservableObject {
                 message.isPlaceholder = true
             }
         }
+        refreshTimelineItems()
     }
 
     private func failurePlaceholderText(prefix: String, errorDescription: String) -> String {
@@ -959,6 +1040,7 @@ final class WatchVoiceViewModel: ObservableObject {
 
     private func removeMessage(id: UUID) {
         messages.removeAll { $0.id == id }
+        refreshTimelineItems()
     }
 
     private func updateMessage(
@@ -974,6 +1056,172 @@ final class WatchVoiceViewModel: ObservableObject {
         var updatedMessages = messages
         update(&updatedMessages[index])
         messages = updatedMessages
+        refreshTimelineItems()
+    }
+
+    private func upsertDisplayMessage(_ message: ChatMessage) {
+        if let index = messages.firstIndex(where: { $0.id == message.id }) {
+            messages[index] = message
+        } else {
+            messages.append(message)
+        }
+
+        messages.sort { $0.createdAt < $1.createdAt }
+        applyDisplayWindowLimit()
+        refreshTimelineItems()
+    }
+
+    private func applyDisplayWindowLimit() {
+        guard messages.count > StandalonePTTDefaults.visibleMessagesLimit else { return }
+        messages = Array(messages.suffix(StandalonePTTDefaults.visibleMessagesLimit))
+    }
+
+    private func makeAssistantTurnRequest(
+        userMessage: ChatMessage,
+        providerContext: ProviderContextState? = nil
+    ) -> AssistantTurnRequest {
+        AssistantTurnRequest(
+            conversationKey: conversation.conversationKey,
+            contextEpochID: conversation.contextEpochID,
+            providerContext: providerContext ?? conversation.activeProviderContext,
+            userMessage: userMessage,
+            recentMessages: conversation.currentEpochRawRecoveryMessages,
+            humanSummary: conversation.humanSummaryForCurrentEpoch,
+            summaryThroughMessageId: conversation.summaryThroughMessageIdForCurrentEpoch,
+            settings: settings
+        )
+    }
+
+    private func currentConversationMutationGuard() -> ConversationMutationGuard {
+        ConversationMutationGuard(
+            contextEpochID: conversation.contextEpochID,
+            revision: conversationRevision
+        )
+    }
+
+    private func isCurrentConversation(_ guardValue: ConversationMutationGuard) -> Bool {
+        conversation.contextEpochID == guardValue.contextEpochID &&
+            conversationRevision == guardValue.revision
+    }
+
+    private func persistMessage(_ message: ChatMessage, marksProviderContextDirty: Bool = false) {
+        conversation.appendMessage(message)
+        if marksProviderContextDirty {
+            conversation.markActiveProviderContextRequiresLocalHistoryBootstrap()
+        }
+        saveConversation()
+        refreshTimelineItems()
+    }
+
+    private func persistAssistantMessage(_ message: ChatMessage, providerContext: ProviderContextState?) {
+        conversation.appendMessage(message)
+        conversation.setProviderContext(providerContext)
+        saveConversation()
+        refreshTimelineItems()
+    }
+
+    private func updateSummaryIfNeeded(apiKey: String) async {
+        let currentEpochMessages = conversation.currentEpochMessages
+        guard currentEpochMessages.count > StandalonePTTDefaults.rawRecoveryMessagesLimit else { return }
+
+        let overflowCount = currentEpochMessages.count - StandalonePTTDefaults.rawRecoveryMessagesLimit
+        let messagesToSummarize = Array(currentEpochMessages.prefix(overflowCount))
+        guard let throughMessageId = messagesToSummarize.last?.id else { return }
+        let summaryRequest = ConversationSummaryRequest(
+            conversationKey: conversation.conversationKey,
+            contextEpochID: conversation.contextEpochID,
+            providerContext: conversation.activeProviderContext,
+            currentSummary: conversation.humanSummaryForCurrentEpoch,
+            messages: messagesToSummarize,
+            throughMessageID: throughMessageId,
+            settings: settings
+        )
+        let mutationGuard = currentConversationMutationGuard()
+
+        do {
+            guard let result = try await assistantProvider.summarizeIfNeeded(
+                apiKey: apiKey,
+                request: summaryRequest
+            ) else { return }
+            guard isCurrentConversation(mutationGuard) else { return }
+
+            let hasTransientPlaceholders = messages.contains { $0.isPlaceholder }
+            conversation.markSummarized(summary: result.summary, through: result.throughMessageID)
+            conversation.setProviderContext(result.providerContext)
+            saveConversation()
+            if hasTransientPlaceholders {
+                refreshTimelineItems()
+            } else {
+                refreshDisplayMessagesFromConversation()
+            }
+            Self.logger.info("conversation summary updated summarizedMessages=\(messagesToSummarize.count, privacy: .public)")
+        } catch {
+            Self.logger.error("conversation summary update skipped error=\(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    private func saveConversation() {
+        conversationRevision += 1
+        do {
+            try conversationStore.save(conversation)
+        } catch {
+            errorMessage = error.localizedDescription
+            Self.logger.error("conversation save failed error=\(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    private func refreshDisplayMessagesFromConversation() {
+        messages = conversation.displayMessages
+        refreshTimelineItems()
+    }
+
+    private func refreshTimelineItems() {
+        let visiblePersistentIDs = Set(messages.filter { !$0.isPlaceholder }.map(\.id))
+        let hasEarlierMessages = conversation.messages.contains { !visiblePersistentIDs.contains($0.id) }
+        timelineItems = timelineFormatter.items(
+            for: messages,
+            hasEarlierMessages: hasEarlierMessages,
+            hasSummarizedEarlierContext: conversation.hasSummarizedEarlierContext,
+            lastContextResetAt: conversation.lastContextResetAt,
+            events: conversation.events
+        )
+    }
+
+    private func clearConversationHistoryFromPhone() -> Bool {
+        activeTurnID = UUID()
+        activeRecordingStartID = nil
+        stopAssistantSpeechPlayback()
+        recorder.cancel()
+        isPushToTalkHoldActive = false
+        isRecordingStartPending = false
+        shouldFinishPushToTalkAfterStart = false
+        shouldLockPushToTalkAfterStart = false
+        shouldCancelPushToTalkAfterStart = false
+        isPushToTalkRecording = false
+        isRecordingLocked = false
+        pttState = .ready
+        conversation.clearHistory()
+        conversationRevision += 1
+        do {
+            try conversationStore.clear()
+            messages.removeAll()
+            refreshTimelineItems()
+            errorMessage = nil
+            return true
+        } catch {
+            errorMessage = error.localizedDescription
+            return false
+        }
+    }
+
+    private static func defaultConversationStore() -> WatchConversationStore {
+        if let store = try? WatchConversationStore.defaultStore() {
+            return store
+        }
+
+        return WatchConversationStore(
+            fileURL: FileManager.default.temporaryDirectory.appendingPathComponent("watch-conversation.json")
+        )
     }
 
     private var normalizedAPIKey: String? {
@@ -990,6 +1238,7 @@ struct WatchOpenAITestMode: Equatable {
     var isEnabled: Bool
     var transcriptionFailuresBeforeSuccess: Int = 0
     var seedsCitationChat: Bool = false
+    var seedsOverflowChat: Bool = false
 
     var apiKeyOverride: String? {
         isEnabled ? "__nadgar_mock_openai__" : nil
@@ -1000,12 +1249,22 @@ struct WatchOpenAITestMode: Equatable {
     static var current: WatchOpenAITestMode {
         #if DEBUG
         let processInfo = ProcessInfo.processInfo
-        let isLaunchArgumentEnabled = processInfo.arguments.contains("-NadgarMockOpenAI")
-        let isSeedChatLaunchArgumentEnabled = processInfo.arguments.contains("-NadgarMockCitationChat")
-        let environmentValue = processInfo.environment["NADGAR_MOCK_OPENAI"]?
+        let isLaunchArgumentEnabled = processInfo.arguments.contains("-NadgarMockOpenAI") ||
+            processInfo.arguments.contains("-WristAssistMockOpenAI")
+        let isSeedChatLaunchArgumentEnabled = processInfo.arguments.contains("-NadgarMockCitationChat") ||
+            processInfo.arguments.contains("-WristAssistMockCitationChat")
+        let isOverflowChatLaunchArgumentEnabled = processInfo.arguments.contains("-NadgarMockOverflowChat") ||
+            processInfo.arguments.contains("-WristAssistMockOverflowChat")
+        let environmentValue = (processInfo.environment["NADGAR_MOCK_OPENAI"] ??
+            processInfo.environment["WRISTASSIST_MOCK_OPENAI"])?
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
-        let seedChatEnvironmentValue = processInfo.environment["NADGAR_MOCK_CITATION_CHAT"]?
+        let seedChatEnvironmentValue = (processInfo.environment["NADGAR_MOCK_CITATION_CHAT"] ??
+            processInfo.environment["WRISTASSIST_MOCK_CITATION_CHAT"])?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        let overflowChatEnvironmentValue = (processInfo.environment["NADGAR_MOCK_OVERFLOW_CHAT"] ??
+            processInfo.environment["WRISTASSIST_MOCK_OVERFLOW_CHAT"])?
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
         let isEnvironmentEnabled = ["1", "true", "yes", "on"].contains(environmentValue ?? "")
@@ -1019,15 +1278,19 @@ struct WatchOpenAITestMode: Equatable {
                 0
         )
         let isSeedChatEnvironmentEnabled = ["1", "true", "yes", "on"].contains(seedChatEnvironmentValue ?? "")
+        let isOverflowChatEnvironmentEnabled = ["1", "true", "yes", "on"].contains(overflowChatEnvironmentValue ?? "")
         let seedsCitationChat = isSeedChatLaunchArgumentEnabled || isSeedChatEnvironmentEnabled
+        let seedsOverflowChat = isOverflowChatLaunchArgumentEnabled || isOverflowChatEnvironmentEnabled
 
         return WatchOpenAITestMode(
             isEnabled: isLaunchArgumentEnabled ||
                 isEnvironmentEnabled ||
                 transcriptionFailuresBeforeSuccess > 0 ||
-                seedsCitationChat,
+                seedsCitationChat ||
+                seedsOverflowChat,
             transcriptionFailuresBeforeSuccess: transcriptionFailuresBeforeSuccess,
-            seedsCitationChat: seedsCitationChat
+            seedsCitationChat: seedsCitationChat,
+            seedsOverflowChat: seedsOverflowChat
         )
         #else
         return .disabled
@@ -1075,6 +1338,10 @@ struct WatchOpenAITestMode: Equatable {
     }
 
     func initialMessages() -> [ChatMessage] {
+        if seedsOverflowChat {
+            return overflowMessages()
+        }
+
         guard seedsCitationChat else { return [] }
 
         let response = assistantResponse(turnNumber: 1)
@@ -1089,6 +1356,21 @@ struct WatchOpenAITestMode: Equatable {
                 citations: response.citations
             )
         ]
+    }
+
+    private func overflowMessages() -> [ChatMessage] {
+        let baseDate = Date(timeIntervalSinceReferenceDate: 804_000_000)
+        return (0..<60).map { index in
+            let role: ChatMessageRole = index.isMultiple(of: 2) ? .user : .assistant
+            let text = role == .user
+                ? "Seeded user message \(index + 1)"
+                : "Seeded assistant message \(index + 1)"
+            return ChatMessage(
+                role: role,
+                text: text,
+                createdAt: baseDate.addingTimeInterval(TimeInterval(index * 60))
+            )
+        }
     }
 
     private static func integerArgument(named name: String, in arguments: [String]) -> Int? {

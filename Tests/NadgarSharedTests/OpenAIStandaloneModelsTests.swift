@@ -55,6 +55,56 @@ struct OpenAIStandaloneModelsTests {
         #expect(object["stream"] == nil)
     }
 
+    @Test func responsesRequestCanChainPreviousResponseWithCompaction() throws {
+        let request = OpenAIResponsesRequest(
+            model: StandalonePTTDefaults.assistantModel,
+            instructions: "Answer briefly.",
+            input: [OpenAIResponsesInputMessage(role: .user, content: "Next turn")],
+            previousResponseId: "resp_123",
+            store: true,
+            contextManagement: [OpenAIResponsesContextManagement(compactThreshold: 64_000)]
+        )
+
+        let data = try JSONEncoder().encode(request)
+        let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+
+        #expect(object["store"] as? Bool == true)
+        #expect(object["previous_response_id"] as? String == "resp_123")
+        #expect(object["stream"] == nil)
+
+        let contextManagement = try #require(object["context_management"] as? [[String: Any]])
+        #expect(contextManagement.count == 1)
+        #expect(contextManagement[0]["type"] as? String == "compaction")
+        #expect(contextManagement[0]["compact_threshold"] as? Int == 64_000)
+
+        let input = try #require(object["input"] as? [[String: Any]])
+        #expect(input.count == 1)
+        #expect(input[0]["role"] as? String == "user")
+        #expect(input[0]["content"] as? String == "Next turn")
+    }
+
+    @Test func responsesRequestCanBootstrapFallbackContextWithoutPreviousResponseID() throws {
+        let request = OpenAIResponsesRequest(
+            instructions: nil,
+            input: [
+                OpenAIResponsesInputMessage(role: "system", content: "Earlier conversation summary:\nUser prefers short answers."),
+                OpenAIResponsesInputMessage(role: .user, content: "Continue")
+            ],
+            store: true
+        )
+
+        let data = try JSONEncoder().encode(request)
+        let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+
+        #expect(object["store"] as? Bool == true)
+        #expect(object["previous_response_id"] == nil)
+
+        let input = try #require(object["input"] as? [[String: Any]])
+        #expect(input.count == 2)
+        #expect(input[0]["role"] as? String == "system")
+        #expect(input[0]["content"] as? String == "Earlier conversation summary:\nUser prefers short answers.")
+    }
+
     @Test func streamingResponsesRequestIncludesStreamWhenEnabled() throws {
         let request = OpenAIResponsesRequest(
             instructions: nil,
@@ -71,9 +121,10 @@ struct OpenAIStandaloneModelsTests {
     }
 
     @Test func responsesResponsePrefersOutputText() throws {
-        let data = #"{"output_text":"Gotowe.","output":[]}"#.data(using: .utf8)!
+        let data = #"{"id":"resp_abc","output_text":"Gotowe.","output":[]}"#.data(using: .utf8)!
         let decoded = try JSONDecoder().decode(OpenAIResponsesResponse.self, from: data)
 
+        #expect(decoded.id == "resp_abc")
         #expect(decoded.assistantText == "Gotowe.")
     }
 
