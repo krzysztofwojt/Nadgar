@@ -7,6 +7,7 @@ final class PhoneConnectivityController: NSObject, WCSessionDelegate {
     private let settingsProvider: @MainActor () -> ProviderSettings
     private let apiKeyProvider: () throws -> String?
     private let pendingWatchKeyDeletionProvider: @MainActor () -> Bool
+    private let pendingConversationClearProvider: @MainActor () -> Bool
     private let statusHandler: @MainActor (String) -> Void
     private let errorHandler: @MainActor (String) -> Void
     private let watchKeyStatusHandler: @MainActor (Bool) -> Void
@@ -15,6 +16,7 @@ final class PhoneConnectivityController: NSObject, WCSessionDelegate {
         settingsProvider: @escaping @MainActor () -> ProviderSettings,
         apiKeyProvider: @escaping () throws -> String?,
         pendingWatchKeyDeletionProvider: @escaping @MainActor () -> Bool,
+        pendingConversationClearProvider: @escaping @MainActor () -> Bool,
         statusHandler: @escaping @MainActor (String) -> Void,
         errorHandler: @escaping @MainActor (String) -> Void,
         watchKeyStatusHandler: @escaping @MainActor (Bool) -> Void
@@ -22,6 +24,7 @@ final class PhoneConnectivityController: NSObject, WCSessionDelegate {
         self.settingsProvider = settingsProvider
         self.apiKeyProvider = apiKeyProvider
         self.pendingWatchKeyDeletionProvider = pendingWatchKeyDeletionProvider
+        self.pendingConversationClearProvider = pendingConversationClearProvider
         self.statusHandler = statusHandler
         self.errorHandler = errorHandler
         self.watchKeyStatusHandler = watchKeyStatusHandler
@@ -120,6 +123,7 @@ final class PhoneConnectivityController: NSObject, WCSessionDelegate {
                 do {
                     sendConfiguration(try await currentConfiguration())
                     sendCurrentKeyStateToReachableWatch()
+                    sendPendingConversationClearToReachableWatch()
                 } catch {
                     await MainActor.run {
                         errorHandler(error.localizedDescription)
@@ -138,6 +142,7 @@ final class PhoneConnectivityController: NSObject, WCSessionDelegate {
             do {
                 sendConfiguration(try await currentConfiguration())
                 sendCurrentKeyStateToReachableWatch()
+                sendPendingConversationClearToReachableWatch()
             } catch {
                 await MainActor.run {
                     errorHandler(error.localizedDescription)
@@ -361,6 +366,22 @@ final class PhoneConnectivityController: NSObject, WCSessionDelegate {
                     errorHandler(error.localizedDescription)
                 }
             }
+        }
+    }
+
+    func sendPendingConversationClearToReachableWatch() {
+        guard WCSession.isSupported() else { return }
+
+        let session = WCSession.default
+        guard session.activationState == .activated, session.isReachable else { return }
+
+        Task {
+            let hasPendingClear = await MainActor.run {
+                pendingConversationClearProvider()
+            }
+            guard hasPendingClear else { return }
+
+            sendClearConversationHistoryToWatch()
         }
     }
 
