@@ -350,7 +350,7 @@ struct OpenAIResponsesConversationProvider: AssistantConversationProvider {
                     providerContext: providerContext
                 )
             } catch let error as WatchOpenAIClientError where error.isInvalidPreviousResponseID {
-                providerContext = ProviderContextState(providerID: providerID)
+                providerContext = ProviderContextState(providerID: providerContext.providerID)
             }
         }
 
@@ -403,7 +403,6 @@ struct OpenAIResponsesConversationProvider: AssistantConversationProvider {
         }
 
         var updatedContext = providerContext
-        updatedContext.providerID = providerID
         updatedContext.lastRemoteTurnID = responseID
         updatedContext.clearLocalHistoryBootstrapRequirement()
 

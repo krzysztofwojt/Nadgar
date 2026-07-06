@@ -33,7 +33,11 @@ public struct WatchConfiguration: Codable, Equatable, Sendable {
     public init(settings: ProviderSettings, hasAPIKey: Bool? = nil) {
         var normalizedSettings = settings
         if let hasAPIKey {
-            normalizedSettings.hasAPIKey = hasAPIKey
+            if let profileID = normalizedSettings.firstOpenAIProfile()?.id {
+                normalizedSettings.setAPIKeyStatus(hasAPIKey, for: profileID)
+            } else {
+                normalizedSettings.hasAPIKey = hasAPIKey
+            }
         }
 
         self.settings = normalizedSettings
@@ -43,10 +47,10 @@ public struct WatchConfiguration: Codable, Equatable, Sendable {
 public enum PhoneToWatchMessage: Equatable, Sendable {
     case configurationChanged(WatchConfiguration)
     case settingsChanged(ProviderSettings)
-    case syncAPIKey(String)
-    case deleteAPIKey
+    case syncAPIKey(profileID: String, apiKey: String)
+    case deleteAPIKey(profileID: String)
     case clearConversationHistory
-    case keyStatusResponse(hasKey: Bool)
+    case keyStatusResponse(profileID: String?, hasKey: Bool)
     case requestPendingOpenURL
     case openURLResult(success: Bool, message: String?)
     case authUnavailable(String)
@@ -58,14 +62,20 @@ public enum PhoneToWatchMessage: Equatable, Sendable {
             return try MessageEnvelope(type: "configurationChanged", payload: encode(configuration))
         case .settingsChanged(let settings):
             return try MessageEnvelope(type: "settingsChanged", payload: encode(settings))
-        case .syncAPIKey(let apiKey):
-            return try MessageEnvelope(type: "syncAPIKey", payload: encode(APIKeyPayload(apiKey: apiKey)))
-        case .deleteAPIKey:
-            return MessageEnvelope(type: "deleteAPIKey")
+        case .syncAPIKey(let profileID, let apiKey):
+            return try MessageEnvelope(
+                type: "syncAPIKey",
+                payload: encode(APIKeyPayload(profileID: profileID, apiKey: apiKey))
+            )
+        case .deleteAPIKey(let profileID):
+            return try MessageEnvelope(type: "deleteAPIKey", payload: encode(ProfileIDPayload(profileID: profileID)))
         case .clearConversationHistory:
             return MessageEnvelope(type: "clearConversationHistory")
-        case .keyStatusResponse(let hasKey):
-            return try MessageEnvelope(type: "keyStatusResponse", payload: encode(KeyStatusPayload(hasKey: hasKey)))
+        case .keyStatusResponse(let profileID, let hasKey):
+            return try MessageEnvelope(
+                type: "keyStatusResponse",
+                payload: encode(KeyStatusPayload(profileID: profileID, hasKey: hasKey))
+            )
         case .requestPendingOpenURL:
             return MessageEnvelope(type: "requestPendingOpenURL")
         case .openURLResult(let success, let message):
@@ -87,13 +97,16 @@ public enum PhoneToWatchMessage: Equatable, Sendable {
         case "settingsChanged":
             self = .settingsChanged(try decodePayload(ProviderSettings.self, from: envelope))
         case "syncAPIKey":
-            self = .syncAPIKey(try decodePayload(APIKeyPayload.self, from: envelope).apiKey)
+            let payload = try decodePayload(APIKeyPayload.self, from: envelope)
+            self = .syncAPIKey(profileID: payload.normalizedProfileID, apiKey: payload.apiKey)
         case "deleteAPIKey":
-            self = .deleteAPIKey
+            let payload = try decodeOptionalPayload(ProfileIDPayload.self, from: envelope)
+            self = .deleteAPIKey(profileID: payload?.normalizedProfileID ?? ProviderProfile.legacyOpenAIProfileID)
         case "clearConversationHistory":
             self = .clearConversationHistory
         case "keyStatusResponse":
-            self = .keyStatusResponse(hasKey: try decodePayload(KeyStatusPayload.self, from: envelope).hasKey)
+            let payload = try decodePayload(KeyStatusPayload.self, from: envelope)
+            self = .keyStatusResponse(profileID: payload.profileID, hasKey: payload.hasKey)
         case "requestPendingOpenURL":
             self = .requestPendingOpenURL
         case "openURLResult":
@@ -112,8 +125,8 @@ public enum PhoneToWatchMessage: Equatable, Sendable {
 public enum WatchToPhoneMessage: Equatable, Sendable {
     case requestConfiguration
     case requestSettings
-    case keyStatusRequest
-    case keyStatusResponse(hasKey: Bool)
+    case keyStatusRequest(profileID: String?)
+    case keyStatusResponse(profileID: String?, hasKey: Bool)
     case reportConnectionState(RealtimeConnectionState)
     case openURL(String)
     case noPendingOpenURL
@@ -126,10 +139,16 @@ public enum WatchToPhoneMessage: Equatable, Sendable {
             return MessageEnvelope(type: "requestConfiguration")
         case .requestSettings:
             return MessageEnvelope(type: "requestSettings")
-        case .keyStatusRequest:
+        case .keyStatusRequest(let profileID):
+            if let profileID {
+                return try MessageEnvelope(type: "keyStatusRequest", payload: encode(ProfileIDPayload(profileID: profileID)))
+            }
             return MessageEnvelope(type: "keyStatusRequest")
-        case .keyStatusResponse(let hasKey):
-            return try MessageEnvelope(type: "keyStatusResponse", payload: encode(KeyStatusPayload(hasKey: hasKey)))
+        case .keyStatusResponse(let profileID, let hasKey):
+            return try MessageEnvelope(
+                type: "keyStatusResponse",
+                payload: encode(KeyStatusPayload(profileID: profileID, hasKey: hasKey))
+            )
         case .reportConnectionState(let state):
             return try MessageEnvelope(type: "reportConnectionState", payload: encode(StatePayload(state: state)))
         case .openURL(let url):
@@ -150,9 +169,11 @@ public enum WatchToPhoneMessage: Equatable, Sendable {
         case "requestSettings":
             self = .requestSettings
         case "keyStatusRequest":
-            self = .keyStatusRequest
+            let payload = try decodeOptionalPayload(ProfileIDPayload.self, from: envelope)
+            self = .keyStatusRequest(profileID: payload?.profileID)
         case "keyStatusResponse":
-            self = .keyStatusResponse(hasKey: try decodePayload(KeyStatusPayload.self, from: envelope).hasKey)
+            let payload = try decodePayload(KeyStatusPayload.self, from: envelope)
+            self = .keyStatusResponse(profileID: payload.profileID, hasKey: payload.hasKey)
         case "reportConnectionState":
             self = .reportConnectionState(try decodePayload(StatePayload.self, from: envelope).state)
         case "openURL":
@@ -187,11 +208,27 @@ public enum MessageCodingError: LocalizedError, Equatable {
 }
 
 private struct APIKeyPayload: Codable, Equatable {
-    let apiKey: String
+    var profileID: String?
+    var apiKey: String
+
+    var normalizedProfileID: String {
+        profileID?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty ??
+            ProviderProfile.legacyOpenAIProfileID
+    }
+}
+
+private struct ProfileIDPayload: Codable, Equatable {
+    var profileID: String?
+
+    var normalizedProfileID: String {
+        profileID?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty ??
+            ProviderProfile.legacyOpenAIProfileID
+    }
 }
 
 private struct KeyStatusPayload: Codable, Equatable {
-    let hasKey: Bool
+    var profileID: String?
+    var hasKey: Bool
 }
 
 private struct MessagePayload: Codable, Equatable {
@@ -221,4 +258,18 @@ private func decodePayload<T: Decodable>(_ type: T.Type, from envelope: MessageE
     }
 
     return try JSONDecoder().decode(type, from: payload)
+}
+
+private func decodeOptionalPayload<T: Decodable>(_ type: T.Type, from envelope: MessageEnvelope) throws -> T? {
+    guard let payload = envelope.payload else {
+        return nil
+    }
+
+    return try JSONDecoder().decode(type, from: payload)
+}
+
+private extension String {
+    var nilIfEmpty: String? {
+        isEmpty ? nil : self
+    }
 }

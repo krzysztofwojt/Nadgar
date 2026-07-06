@@ -88,7 +88,7 @@ struct WatchContentView: View {
     }
 
     private var missingAPIKeyView: some View {
-        Text("Open Nadgar on your iPhone and save API key.")
+        Text("Open Nadgar on your iPhone and configure a provider.")
             .font(.footnote.weight(.semibold))
             .foregroundStyle(.white)
             .multilineTextAlignment(.center)

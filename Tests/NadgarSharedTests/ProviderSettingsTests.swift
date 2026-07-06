@@ -83,6 +83,51 @@ struct ProviderSettingsTests {
         #expect(settings.transcriptionModel == ProviderSettings.defaultTranscriptionModel)
     }
 
+    @Test func legacySettingsDecodeToDeterministicOpenAIProfileAndSelections() throws {
+        let data = """
+        {
+          "selectedAuthMode": "openAIAPIKey",
+          "hasAPIKey": true,
+          "model": "gpt-5.5",
+          "transcriptionModel": "gpt-4o-transcribe"
+        }
+        """.data(using: .utf8)!
+
+        let settings = try JSONDecoder().decode(ProviderSettings.self, from: data)
+
+        #expect(settings.providerProfiles.count == 1)
+        #expect(settings.providerProfiles.first?.id == ProviderProfile.legacyOpenAIProfileID)
+        #expect(settings.providerProfiles.first?.name == "OpenAI API")
+        #expect(settings.selectedResponse == TaskModelSelection(
+            profileID: ProviderProfile.legacyOpenAIProfileID,
+            model: "gpt-5.5"
+        ))
+        #expect(settings.selectedTranscription == TaskModelSelection(
+            profileID: ProviderProfile.legacyOpenAIProfileID,
+            model: "gpt-4o-transcribe"
+        ))
+    }
+
+    @Test func newSettingsCanPersistZeroProvidersWithoutRecreatingOpenAI() throws {
+        let data = """
+        {
+          "selectedAuthMode": "openAIAPIKey",
+          "hasAPIKey": false,
+          "providerProfiles": [],
+          "selectedResponse": null,
+          "selectedTranscription": null,
+          "configurationVersion": 3
+        }
+        """.data(using: .utf8)!
+
+        let settings = try JSONDecoder().decode(ProviderSettings.self, from: data)
+
+        #expect(settings.providerProfiles.isEmpty)
+        #expect(settings.selectedResponse == nil)
+        #expect(settings.selectedTranscription == nil)
+        #expect(settings.configurationVersion == 3)
+    }
+
     @Test func supportedModelOptionsExposeDisplayNamesAndAPIValues() {
         #expect(ProviderSettings.supportedAssistantModels.map(\.displayName).contains("GPT-5.4 nano"))
         #expect(ProviderSettings.supportedAssistantModels.map(\.apiValue).contains("gpt-5.4-nano"))

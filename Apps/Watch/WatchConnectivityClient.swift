@@ -5,10 +5,10 @@ import NadgarShared
 final class WatchConnectivityClient: NSObject, WCSessionDelegate {
     var onConfigurationChanged: (@MainActor (WatchConfiguration) -> Void)?
     var onSettingsChanged: (@MainActor (ProviderSettings) -> Void)?
-    var onSyncAPIKey: (@MainActor (String) -> Bool)?
-    var onDeleteAPIKey: (@MainActor () -> Bool)?
+    var onSyncAPIKey: (@MainActor (String, String) -> Bool)?
+    var onDeleteAPIKey: (@MainActor (String) -> Bool)?
     var onClearConversationHistory: (@MainActor () -> Bool)?
-    var hasLocalAPIKey: (@MainActor () -> Bool)?
+    var hasLocalAPIKey: (@MainActor (String) -> Bool)?
     private let pendingOpenURLLock = NSLock()
     private var pendingOpenURLString: String?
 
@@ -41,14 +41,14 @@ final class WatchConnectivityClient: NSObject, WCSessionDelegate {
             return configuration
         case .settingsChanged(let settings):
             let hasKey = await MainActor.run {
-                hasLocalAPIKey?() ?? settings.hasAPIKey
+                hasAnyLocalAPIKey(in: settings)
             }
             return WatchConfiguration(settings: settings, hasAPIKey: hasKey)
         case .syncAPIKey, .deleteAPIKey, .clearConversationHistory, .keyStatusResponse,
                 .requestPendingOpenURL, .openURLResult:
             _ = await handlePhoneMessage(reply)
             let hasKey = await MainActor.run {
-                hasLocalAPIKey?() ?? false
+                hasAnyLocalAPIKey(in: .default)
             }
             return WatchConfiguration(settings: .default, hasAPIKey: hasKey)
         case .error(let message), .authUnavailable(let message):
@@ -57,10 +57,16 @@ final class WatchConnectivityClient: NSObject, WCSessionDelegate {
     }
 
     func requestKeyStatus() async throws {
-        let reply = try await send(.keyStatusRequest)
-        guard let statusReply = await handlePhoneMessage(reply) else { return }
+        let profileIDs = await MainActor.run {
+            configurationProfileIDs()
+        }
 
-        _ = try await send(statusReply, expectsReply: false)
+        for profileID in profileIDs {
+            let reply = try await send(.keyStatusRequest(profileID: profileID))
+            guard let statusReply = await handlePhoneMessage(reply) else { continue }
+
+            _ = try await send(statusReply, expectsReply: false)
+        }
     }
 
     func reportState(_ state: RealtimeConnectionState) async throws {
@@ -156,19 +162,21 @@ final class WatchConnectivityClient: NSObject, WCSessionDelegate {
         case .settingsChanged(let settings):
             onSettingsChanged?(settings)
             return nil
-        case .syncAPIKey(let apiKey):
-            let hasKey = onSyncAPIKey?(apiKey) ?? false
-            return .keyStatusResponse(hasKey: hasKey)
-        case .deleteAPIKey:
-            let hasKey = onDeleteAPIKey?() ?? (hasLocalAPIKey?() ?? false)
-            return .keyStatusResponse(hasKey: hasKey)
+        case .syncAPIKey(let profileID, let apiKey):
+            let hasKey = onSyncAPIKey?(profileID, apiKey) ?? false
+            return .keyStatusResponse(profileID: profileID, hasKey: hasKey)
+        case .deleteAPIKey(let profileID):
+            let hasKey = onDeleteAPIKey?(profileID) ?? (hasLocalAPIKey?(profileID) ?? false)
+            return .keyStatusResponse(profileID: profileID, hasKey: hasKey)
         case .clearConversationHistory:
             let didClear = onClearConversationHistory?() ?? false
             return didClear ? .conversationHistoryCleared : .error("Could not clear conversation history.")
-        case .keyStatusResponse(let hasKey):
+        case .keyStatusResponse(let profileID, let hasKey):
             guard !hasKey else { return nil }
-            let remainingKey = onDeleteAPIKey?() ?? (hasLocalAPIKey?() ?? false)
-            return .keyStatusResponse(hasKey: remainingKey)
+            let resolvedProfileID = Self.resolvedProfileID(profileID)
+            let remainingKey = onDeleteAPIKey?(resolvedProfileID) ??
+                (hasLocalAPIKey?(resolvedProfileID) ?? false)
+            return .keyStatusResponse(profileID: resolvedProfileID, hasKey: remainingKey)
         case .requestPendingOpenURL:
             guard let pendingURL = dequeuePendingOpenURL() else {
                 return .noPendingOpenURL
@@ -218,6 +226,44 @@ final class WatchConnectivityClient: NSObject, WCSessionDelegate {
                 }
             )
         }
+    }
+
+    @MainActor
+    private func hasAnyLocalAPIKey(in settings: ProviderSettings) -> Bool {
+        settings.providerProfiles.contains { profile in
+            profile.type == .openAI && (hasLocalAPIKey?(profile.id) ?? profile.hasAPIKey)
+        }
+    }
+
+    @MainActor
+    private func configurationProfileIDs() -> [String] {
+        var ids: [String] = []
+        var seen = Set<String>()
+
+        func append(_ profileID: String) {
+            let resolvedProfileID = Self.resolvedProfileID(profileID)
+            guard !seen.contains(resolvedProfileID) else { return }
+            seen.insert(resolvedProfileID)
+            ids.append(resolvedProfileID)
+        }
+
+        let settings = WatchConfigurationStore().loadConfiguration().settings
+        for profile in settings.providerProfiles where profile.type == .openAI {
+            append(profile.id)
+        }
+        if let profileID = settings.selectedResponse?.profileID {
+            append(profileID)
+        }
+        if let profileID = settings.selectedTranscription?.profileID {
+            append(profileID)
+        }
+
+        return ids
+    }
+
+    private static func resolvedProfileID(_ profileID: String?) -> String {
+        let trimmed = profileID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? ProviderProfile.legacyOpenAIProfileID : trimmed
     }
 
     private func enqueuePendingOpenURL(_ url: URL) {
