@@ -132,7 +132,19 @@ enum KeychainError: LocalizedError, Equatable {
         case .invalidData:
             return "The saved API key could not be decoded."
         case .unhandledStatus(let status):
-            return "Keychain failed with status \(status)."
+            return "Keychain is unavailable: \(Self.statusDescription(status)) (status \(status))."
         }
+    }
+
+    private static func statusDescription(_ status: OSStatus) -> String {
+        if status == errSecMissingEntitlement {
+            return "this build is missing the Keychain entitlement."
+        }
+
+        if let message = SecCopyErrorMessageString(status, nil) {
+            return message as String
+        }
+
+        return "Security framework returned an unknown error."
     }
 }

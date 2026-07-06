@@ -198,7 +198,7 @@ final class SettingsViewModel: ObservableObject {
     func saveSettings() {
         guard hasUnsavedSettingsChanges else { return }
 
-        persistSettings(draftSettings(hasAPIKey: settings.hasAPIKey), syncDraft: true)
+        persistSettings(draftSettings(hasAPIKey: settings.hasAPIKey), syncDraft: true, syncKeychain: true)
     }
 
     func setAutoReadEnabled(_ enabled: Bool) {
@@ -250,6 +250,14 @@ final class SettingsViewModel: ObservableObject {
         !isSavingAPIKey
     }
 
+    var keychainStatus: String {
+        if hasUnsavedAPIKeyChanges {
+            return "Unsaved changes"
+        }
+
+        return settings.hasAPIKey ? "Configured" : "Not configured"
+    }
+
     private func persistSavedSettings(hasAPIKey: Bool) {
         persistSettings(currentSettings(hasAPIKey: hasAPIKey), syncDraft: false)
     }
@@ -269,10 +277,10 @@ final class SettingsViewModel: ObservableObject {
             shouldIgnoreSilentModeForAutoRead: shouldIgnoreSilentMode ?? settings.shouldIgnoreSilentModeForAutoRead,
             ttsModel: settings.ttsModel
         )
-        persistSettings(newSettings, syncDraft: false)
+        persistSettings(newSettings, syncDraft: false, syncKeychain: true)
     }
 
-    private func persistSettings(_ newSettings: ProviderSettings, syncDraft: Bool) {
+    private func persistSettings(_ newSettings: ProviderSettings, syncDraft: Bool, syncKeychain: Bool = false) {
         settings = newSettings
 
         if syncDraft {
@@ -288,6 +296,9 @@ final class SettingsViewModel: ObservableObject {
             let data = try JSONEncoder().encode(settings)
             settingsStore.set(data, forKey: Self.settingsKey)
             sendSettingsToWatch()
+            if syncKeychain {
+                syncKeychainStateToWatch()
+            }
         } catch {
             lastError = error.localizedDescription
         }
@@ -360,6 +371,10 @@ final class SettingsViewModel: ObservableObject {
             watchStatus = "API key saved on iPhone. Open Nadgar on Apple Watch to sync."
             return
         }
+    }
+
+    private func syncKeychainStateToWatch() {
+        connectivity?.sendCurrentKeyStateToReachableWatch()
     }
 
     private func clearLocalSavedAPIKeyState() {

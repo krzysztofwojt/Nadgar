@@ -16,6 +16,16 @@ struct ContentView: View {
                     }
                 }
 
+                Section("Watch") {
+                    LabeledContent("Connectivity", value: viewModel.watchStatus)
+                    LabeledContent("Keychain", value: viewModel.keychainStatus)
+
+                    if let lastError = viewModel.lastError {
+                        Text(lastError)
+                            .foregroundStyle(.red)
+                    }
+                }
+
                 Section("About") {
                     Link("Privacy Policy", destination: NadgarLinks.privacyPolicy)
                     Link("FAQ", destination: NadgarLinks.faq)
@@ -165,8 +175,7 @@ private struct OpenAIProviderSettingsView: View {
                 savePersonalizationButton
             }
 
-            Section("Watch") {
-                LabeledContent("Connectivity", value: viewModel.watchStatus)
+            Section {
                 Button(role: .destructive) {
                     viewModel.clearConversationHistoryOnWatch()
                 } label: {
@@ -174,10 +183,6 @@ private struct OpenAIProviderSettingsView: View {
                 }
                 .buttonStyle(.borderless)
 
-                if let lastError = viewModel.lastError {
-                    Text(lastError)
-                        .foregroundStyle(.red)
-                }
             }
 
         }
