@@ -62,26 +62,11 @@ public struct ChatTimelineFormatter: Sendable {
         for messages: [ChatMessage],
         hasEarlierMessages: Bool,
         hasSummarizedEarlierContext: Bool,
-        lastContextResetAt: Date?,
-        events: [ConversationEvent] = [],
+        lastContextResetAt _: Date?,
+        events _: [ConversationEvent] = [],
         now: Date = Date()
     ) -> [ChatTimelineItem] {
         let sortedMessages = messages.sorted { $0.createdAt < $1.createdAt }
-        var resetEvents = events
-            .filter { $0.kind == .contextReset }
-            .sorted { $0.createdAt < $1.createdAt }
-        if resetEvents.isEmpty,
-           let lastContextResetAt {
-            resetEvents = [
-                ConversationEvent(
-                    id: UUID(uuidString: "00000000-0000-0000-0000-000000000000") ?? UUID(),
-                    kind: .contextReset,
-                    createdAt: lastContextResetAt,
-                    providerID: AssistantProviderIDs.openAI,
-                    contextEpochID: UUID()
-                )
-            ]
-        }
         var items: [ChatTimelineItem] = []
 
         if hasSummarizedEarlierContext {
@@ -97,16 +82,8 @@ public struct ChatTimelineFormatter: Sendable {
         }
 
         var emittedDayStarts = Set<Date>()
-        var nextResetEventIndex = 0
 
         for message in sortedMessages {
-            appendResetEvents(
-                from: resetEvents,
-                beforeOrAt: message.createdAt,
-                nextIndex: &nextResetEventIndex,
-                to: &items
-            )
-
             let dayStart = calendar.startOfDay(for: message.createdAt)
             if !emittedDayStarts.contains(dayStart) {
                 emittedDayStarts.insert(dayStart)
@@ -123,13 +100,6 @@ public struct ChatTimelineFormatter: Sendable {
                 userTimestamp: message.role == .user ? timeString(for: message.createdAt) : nil
             )))
         }
-
-        appendResetEvents(
-            from: resetEvents,
-            beforeOrAt: nil,
-            nextIndex: &nextResetEventIndex,
-            to: &items
-        )
 
         return items
     }
@@ -171,26 +141,5 @@ public struct ChatTimelineFormatter: Sendable {
 
     private func localized(_ english: String, polish: String) -> String {
         locale.identifier.lowercased().hasPrefix("pl") ? polish : english
-    }
-
-    private func appendResetEvents(
-        from resetEvents: [ConversationEvent],
-        beforeOrAt date: Date?,
-        nextIndex: inout Int,
-        to items: inout [ChatTimelineItem]
-    ) {
-        while resetEvents.indices.contains(nextIndex) {
-            let event = resetEvents[nextIndex]
-            if let date,
-               event.createdAt > date {
-                return
-            }
-
-            items.append(.notice(ChatTimelineNotice(
-                id: "notice-context-reset-\(event.id.uuidString)",
-                title: "Context reset"
-            )))
-            nextIndex += 1
-        }
     }
 }
