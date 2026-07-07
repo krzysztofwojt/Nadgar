@@ -628,15 +628,20 @@ struct HermesResponsesConversationProvider: AssistantConversationProvider {
     }
 
     private func conversationName(for request: AssistantTurnRequest) -> String {
-        "nadgar:\(profile.id):\(request.conversationKey):\(request.contextEpochID.uuidString.lowercased())"
+        "nadgar:\(profile.id):\(modelKey(for: request.settings)):\(request.conversationKey):\(request.contextEpochID.uuidString.lowercased())"
     }
 
     private func sessionKey(for request: AssistantTurnRequest) -> String {
-        "nadgar:\(profile.id):\(request.conversationKey)"
+        "nadgar:\(profile.id):\(modelKey(for: request.settings)):\(request.conversationKey)"
     }
 
     private func sessionKey(for request: ConversationSummaryRequest) -> String {
-        "nadgar:\(profile.id):\(request.conversationKey)"
+        "nadgar:\(profile.id):\(modelKey(for: request.settings)):\(request.conversationKey)"
+    }
+
+    private func modelKey(for settings: ProviderSettings) -> String {
+        let model = settings.model.trimmingCharacters(in: .whitespacesAndNewlines)
+        return model.isEmpty ? "default" : model
     }
 }
 

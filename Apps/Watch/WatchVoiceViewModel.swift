@@ -545,7 +545,7 @@ final class WatchVoiceViewModel: ObservableObject {
                 stopAssistantSpeechPlayback()
             }
             if shouldBootstrapResponseContext {
-                activeTurnID = UUID()
+                resetInFlightTurnForSettingsBootstrap()
                 conversation.activeProviderID = newResponseContextID ?? AssistantProviderIDs.openAI
                 conversation.markActiveProviderContextRequiresLocalHistoryBootstrap()
                 saveConversation()
@@ -625,6 +625,22 @@ final class WatchVoiceViewModel: ObservableObject {
         conversation.rotateModelContext()
         saveConversation()
         refreshDisplayMessagesFromConversation()
+        isPushToTalkHoldActive = false
+        isRecordingStartPending = false
+        shouldFinishPushToTalkAfterStart = false
+        shouldLockPushToTalkAfterStart = false
+        shouldCancelPushToTalkAfterStart = false
+        isPushToTalkRecording = false
+        isRecordingLocked = false
+        pttState = .ready
+    }
+
+    private func resetInFlightTurnForSettingsBootstrap() {
+        activeTurnID = UUID()
+        activeRecordingStartID = nil
+        stopAssistantSpeechPlayback()
+        recorder.cancel()
+        recorder.cleanupTemporaryFiles()
         isPushToTalkHoldActive = false
         isRecordingStartPending = false
         shouldFinishPushToTalkAfterStart = false
