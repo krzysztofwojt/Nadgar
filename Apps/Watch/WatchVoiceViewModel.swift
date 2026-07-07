@@ -699,7 +699,12 @@ final class WatchVoiceViewModel: ObservableObject {
 
         switch configuration.responseProfile.type {
         case .openAI:
-            return try await assistantProvider.respond(apiKey: configuration.responseAPIKey, request: request)
+            var scopedRequest = request
+            var providerContext = scopedRequest.providerContext ??
+                ProviderContextState(providerID: configuration.responseContextProviderID)
+            providerContext.providerID = configuration.responseContextProviderID
+            scopedRequest.providerContext = providerContext
+            return try await assistantProvider.respond(apiKey: configuration.responseAPIKey, request: scopedRequest)
         case .hermes:
             let provider = HermesResponsesConversationProvider(
                 profile: configuration.responseProfile,

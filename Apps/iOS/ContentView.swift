@@ -450,6 +450,7 @@ private struct OpenAIProviderSettingsView: View {
     @ObservedObject var viewModel: SettingsViewModel
     var profileID: String
     @State private var isAPIKeyVisible = false
+    @FocusState private var isBaseURLFieldFocused: Bool
     @FocusState private var isAPIKeyFieldFocused: Bool
 
     var body: some View {
@@ -576,6 +577,7 @@ private struct HermesProviderSettingsView: View {
     @ObservedObject var viewModel: SettingsViewModel
     var profileID: String
     @State private var isAPIKeyVisible = false
+    @FocusState private var isBaseURLFieldFocused: Bool
     @FocusState private var isAPIKeyFieldFocused: Bool
 
     var body: some View {
@@ -589,6 +591,15 @@ private struct HermesProviderSettingsView: View {
                     .keyboardType(.URL)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
+                    .focused($isBaseURLFieldFocused)
+                    .onSubmit {
+                        viewModel.commitHermesBaseURLDraft(profileID: profileID)
+                    }
+                    .onChange(of: isBaseURLFieldFocused) { _, isFocused in
+                        if !isFocused {
+                            viewModel.commitHermesBaseURLDraft(profileID: profileID)
+                        }
+                    }
 
                 Picker("Response model", selection: responseModelBinding) {
                     ForEach(viewModel.hermesResponseModelOptions(for: profileID)) { option in
@@ -598,6 +609,7 @@ private struct HermesProviderSettingsView: View {
                 .disabled(!viewModel.canSelectHermesResponseModel(for: profileID))
 
                 Button {
+                    isBaseURLFieldFocused = false
                     Task {
                         await viewModel.refreshHermesModels(for: profileID)
                     }
@@ -659,6 +671,9 @@ private struct HermesProviderSettingsView: View {
         }
         .navigationTitle(viewModel.settings.profile(id: profileID)?.name ?? "Hermes Agent")
         .navigationBarTitleDisplayMode(.inline)
+        .onDisappear {
+            viewModel.commitHermesBaseURLDraft(profileID: profileID)
+        }
     }
 
     private var apiKeyField: some View {
@@ -681,6 +696,7 @@ private struct HermesProviderSettingsView: View {
     private var saveAPIKeyButton: some View {
         if viewModel.hasUnsavedAPIKeyChanges(for: profileID) {
             Button {
+                isBaseURLFieldFocused = false
                 isAPIKeyFieldFocused = false
                 Task {
                     await viewModel.saveAPIKeyDraft(for: profileID)
@@ -715,9 +731,9 @@ private struct HermesProviderSettingsView: View {
 
     private var baseURLBinding: Binding<String> {
         Binding {
-            viewModel.settings.profile(id: profileID)?.hermesBaseURL ?? ""
+            viewModel.hermesBaseURLDraft(for: profileID)
         } set: { newValue in
-            viewModel.updateHermesBaseURL(profileID: profileID, baseURL: newValue)
+            viewModel.updateHermesBaseURLDraft(newValue, for: profileID)
         }
     }
 

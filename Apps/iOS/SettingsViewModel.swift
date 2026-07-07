@@ -70,6 +70,7 @@ final class SettingsViewModel: ObservableObject {
     @Published private(set) var watchStatus = "Not connected"
     @Published private(set) var lastError: String?
     @Published private var apiKeyDrafts: [String: String]
+    @Published private var hermesBaseURLDrafts: [String: String]
     @Published private var savedAPIKeys: [String: String]
     @Published private var apiKeyValidationErrors: [String: String]
     @Published private var savingAPIKeyProfileIDs: Set<String>
@@ -95,6 +96,7 @@ final class SettingsViewModel: ObservableObject {
         var loadedSettings = Self.loadSettings(from: settingsStore)
         var loadedKeys: [String: String] = [:]
         var drafts: [String: String] = [:]
+        var hermesURLDrafts: [String: String] = [:]
 
         for profile in loadedSettings.providerProfiles where profile.type.supportsAPIKey {
             do {
@@ -113,6 +115,9 @@ final class SettingsViewModel: ObservableObject {
                 loadedSettings.setAPIKeyStatus(false, for: profile.id)
             }
         }
+        for profile in loadedSettings.providerProfiles where profile.type == .hermes {
+            hermesURLDrafts[profile.id] = profile.hermesBaseURL
+        }
         loadedSettings.normalizeSelectionsAfterProfileChange()
 
         self.settings = loadedSettings
@@ -125,6 +130,7 @@ final class SettingsViewModel: ObservableObject {
         self.shouldIgnoreSilentModeForAutoRead = loadedSettings.shouldIgnoreSilentModeForAutoRead
         self.instructions = loadedSettings.instructions
         self.apiKeyDrafts = drafts
+        self.hermesBaseURLDrafts = hermesURLDrafts
         self.savedAPIKeys = loadedKeys
         self.apiKeyValidationErrors = [:]
         self.savingAPIKeyProfileIDs = []
@@ -405,6 +411,9 @@ final class SettingsViewModel: ObservableObject {
     func addProvider(type: ProviderType) -> String {
         let profile = ProviderProfile(type: type)
         apiKeyDrafts[profile.id] = ""
+        if profile.type == .hermes {
+            hermesBaseURLDrafts[profile.id] = profile.hermesBaseURL
+        }
 
         var updatedSettings = storedSettingsWithCurrentKeyStatuses()
         updatedSettings.providerProfiles.append(profile)
@@ -449,6 +458,46 @@ final class SettingsViewModel: ObservableObject {
         }
     }
 
+    func hermesBaseURLDraft(for profileID: String) -> String {
+        hermesBaseURLDrafts[profileID] ?? settings.profile(id: profileID)?.hermesBaseURL ?? ""
+    }
+
+    func updateHermesBaseURLDraft(_ baseURL: String, for profileID: String) {
+        hermesBaseURLDrafts[profileID] = baseURL
+
+        let normalizedDraft = ProviderProfile.normalizedHermesBaseURL(baseURL)
+        if normalizedDraft == settings.profile(id: profileID)?.hermesBaseURL {
+            apiKeyValidationErrors[profileID] = nil
+        }
+    }
+
+    @discardableResult
+    func commitHermesBaseURLDraft(profileID: String) -> Bool {
+        guard let index = settings.providerProfiles.firstIndex(where: { $0.id == profileID }) else {
+            return false
+        }
+
+        var profile = settings.providerProfiles[index]
+        guard profile.type == .hermes else {
+            return false
+        }
+
+        let oldBaseURL = profile.hermesBaseURL
+        profile.setHermesBaseURL(hermesBaseURLDraft(for: profileID))
+        hermesBaseURLDrafts[profileID] = profile.hermesBaseURL
+        guard profile.hermesBaseURL != oldBaseURL else {
+            return false
+        }
+
+        profile.setHermesResponseModels([])
+        var updatedSettings = storedSettingsWithCurrentKeyStatuses()
+        updatedSettings.providerProfiles[index] = profile
+        updatedSettings.normalizeSelectionsAfterProfileChange()
+        apiKeyValidationErrors[profileID] = nil
+        persistSettings(updatedSettings, syncDraft: true)
+        return true
+    }
+
     func clearAPIKeyDraft(for profileID: String) {
         updateAPIKeyDraft("", for: profileID)
     }
@@ -463,6 +512,13 @@ final class SettingsViewModel: ObservableObject {
     }
 
     func saveAPIKeyDraft(for profileID: String) async {
+        guard let existingProfile = settings.profile(id: profileID) else {
+            apiKeyValidationErrors[profileID] = "Provider was deleted."
+            return
+        }
+        if existingProfile.type == .hermes {
+            commitHermesBaseURLDraft(profileID: profileID)
+        }
         guard let profile = settings.profile(id: profileID) else {
             apiKeyValidationErrors[profileID] = "Provider was deleted."
             return
@@ -549,7 +605,7 @@ final class SettingsViewModel: ObservableObject {
     func canRefreshHermesModels(for profileID: String) -> Bool {
         guard let profile = settings.profile(id: profileID) else { return false }
         return profile.type == .hermes &&
-            profile.hasValidHermesBaseURL &&
+            ProviderProfile.hermesV1BaseURL(from: hermesBaseURLDraft(for: profileID)) != nil &&
             !normalizedAPIKey(savedAPIKeys[profileID] ?? "").isEmpty &&
             !hasUnsavedAPIKeyChanges(for: profileID) &&
             !isSavingAPIKey(for: profileID)
@@ -560,6 +616,7 @@ final class SettingsViewModel: ObservableObject {
             apiKeyValidationErrors[profileID] = "Provider was deleted."
             return
         }
+        commitHermesBaseURLDraft(profileID: profileID)
 
         let apiKey = normalizedAPIKey(savedAPIKeys[profileID] ?? "")
         guard !apiKey.isEmpty else {
@@ -574,6 +631,10 @@ final class SettingsViewModel: ObservableObject {
         }
 
         do {
+            guard let profile = settings.profile(id: profileID), profile.type == .hermes else {
+                apiKeyValidationErrors[profileID] = "Provider was deleted."
+                return
+            }
             let models = try await hermesAPIKeyValidator.validateAPIKey(
                 apiKey: apiKey,
                 baseURL: profile.hermesBaseURL
@@ -602,22 +663,6 @@ final class SettingsViewModel: ObservableObject {
 
     func isSavingAPIKey(for profileID: String) -> Bool {
         savingAPIKeyProfileIDs.contains(profileID)
-    }
-
-    func updateHermesBaseURL(profileID: String, baseURL: String) {
-        guard let index = settings.providerProfiles.firstIndex(where: { $0.id == profileID }) else { return }
-
-        var profile = settings.providerProfiles[index]
-        let oldBaseURL = profile.hermesBaseURL
-        profile.setHermesBaseURL(baseURL)
-        profile.setHermesResponseModels([])
-        guard profile.hermesBaseURL != oldBaseURL else { return }
-
-        var updatedSettings = storedSettingsWithCurrentKeyStatuses()
-        updatedSettings.providerProfiles[index] = profile
-        updatedSettings.normalizeSelectionsAfterProfileChange()
-        apiKeyValidationErrors[profileID] = nil
-        persistSettings(updatedSettings, syncDraft: true)
     }
 
     func updateHermesResponseModel(profileID: String, model: String) {
@@ -840,6 +885,7 @@ final class SettingsViewModel: ObservableObject {
                 deletionErrors.append(error.localizedDescription)
             }
             apiKeyDrafts.removeValue(forKey: profileID)
+            hermesBaseURLDrafts.removeValue(forKey: profileID)
             savedAPIKeys.removeValue(forKey: profileID)
             apiKeyValidationErrors.removeValue(forKey: profileID)
             savingAPIKeyProfileIDs.remove(profileID)
@@ -906,6 +952,7 @@ final class SettingsViewModel: ObservableObject {
             selectedTranscription = settings.selectedTranscription
             selectedSpeech = settings.selectedSpeech
             speechVoicesByProfileID = settings.speechVoicesByProfileID
+            syncHermesBaseURLDrafts(from: settings)
             voice = settings.voice
             isAutoReadEnabled = settings.isAutoReadEnabled
             shouldIgnoreSilentModeForAutoRead = settings.shouldIgnoreSilentModeForAutoRead
@@ -969,6 +1016,16 @@ final class SettingsViewModel: ObservableObject {
         }
         updatedSettings.normalizeSelectionsAfterProfileChange()
         return updatedSettings
+    }
+
+    private func syncHermesBaseURLDrafts(from settings: ProviderSettings) {
+        let hermesProfiles = settings.providerProfiles.filter { $0.type == .hermes }
+        let hermesProfileIDs = Set(hermesProfiles.map(\.id))
+        hermesBaseURLDrafts = hermesBaseURLDrafts.filter { hermesProfileIDs.contains($0.key) }
+
+        for profile in hermesProfiles {
+            hermesBaseURLDrafts[profile.id] = profile.hermesBaseURL
+        }
     }
 
     private func refreshUnsavedSettingsChanges() {
