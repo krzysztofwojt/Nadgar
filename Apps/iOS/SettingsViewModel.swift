@@ -547,6 +547,17 @@ final class SettingsViewModel: ObservableObject {
 
         do {
             let hermesModels = try await validateAPIKey(trimmed, for: profile)
+            guard let currentProfile = settings.profile(id: profileID),
+                  currentProfile.type == profile.type
+            else {
+                apiKeyValidationErrors[profileID] = "Provider was deleted."
+                return
+            }
+            if currentProfile.type == .hermes,
+               currentProfile.hermesBaseURL != profile.hermesBaseURL {
+                apiKeyValidationErrors[profileID] = "Hermes URL changed. Save the key again."
+                return
+            }
             try credentialStore.saveAPIKey(trimmed, for: profileID)
             savedAPIKeys[profileID] = trimmed
             apiKeyDrafts[profileID] = trimmed
