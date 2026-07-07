@@ -646,10 +646,19 @@ final class SettingsViewModel: ObservableObject {
                 apiKeyValidationErrors[profileID] = "Provider was deleted."
                 return
             }
+            let validatedBaseURL = profile.hermesBaseURL
             let models = try await hermesAPIKeyValidator.validateAPIKey(
                 apiKey: apiKey,
-                baseURL: profile.hermesBaseURL
+                baseURL: validatedBaseURL
             )
+            guard let currentProfile = settings.profile(id: profileID), currentProfile.type == .hermes else {
+                apiKeyValidationErrors[profileID] = "Provider was deleted."
+                return
+            }
+            guard currentProfile.hermesBaseURL == validatedBaseURL else {
+                apiKeyValidationErrors[profileID] = "Hermes URL changed. Refresh models again."
+                return
+            }
             var updatedSettings = storedSettingsWithCurrentKeyStatuses()
             applyHermesResponseModels(models, to: profileID, in: &updatedSettings)
             updatedSettings.normalizeSelectionsAfterProfileChange()
