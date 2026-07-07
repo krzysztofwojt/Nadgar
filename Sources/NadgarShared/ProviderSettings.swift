@@ -191,16 +191,17 @@ public struct ProviderProfile: Codable, Equatable, Hashable, Identifiable, Senda
 
     public static func normalizedHermesResponseModel(_ model: String) -> String {
         let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? defaultHermesResponseModel : trimmed.lowercased()
+        return trimmed.isEmpty ? defaultHermesResponseModel : trimmed
     }
 
     public static func normalizedHermesResponseModels(_ models: [String]) -> [String] {
         var seen = Set<String>()
         return models.compactMap { model in
-            let normalized = model.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            guard !normalized.isEmpty, !seen.contains(normalized) else { return nil }
-            seen.insert(normalized)
-            return normalized
+            let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
+            let dedupeKey = trimmed.lowercased()
+            guard !trimmed.isEmpty, !seen.contains(dedupeKey) else { return nil }
+            seen.insert(dedupeKey)
+            return trimmed
         }
     }
 
@@ -311,7 +312,7 @@ public struct TaskModelSelection: Codable, Equatable, Hashable, Sendable {
 
     public init(profileID: String, model: String) {
         self.profileID = profileID.trimmingCharacters(in: .whitespacesAndNewlines)
-        self.model = model.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        self.model = model.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
 
@@ -397,6 +398,8 @@ public struct ProviderSettings: Codable, Equatable, Sendable {
         self.instructions = instructions
         self.isAutoReadEnabled = isAutoReadEnabled
         self.shouldIgnoreSilentModeForAutoRead = shouldIgnoreSilentModeForAutoRead
+        self.model = self.selectedResponse?.model ?? normalizedModel
+        self.transcriptionModel = self.selectedTranscription?.model ?? normalizedTranscriptionModel
         self.ttsModel = self.selectedSpeech?.model ?? Self.normalizedTTSModel(ttsModel)
     }
 

@@ -170,8 +170,8 @@ struct ProviderSettingsTests {
 
         #expect(profile.name == "Hermes Agent")
         #expect(profile.hermesBaseURL == "https://hermes.example.com/nadgar")
-        #expect(profile.hermesResponseModel == "hermes-agent")
-        #expect(profile.hermesResponseModels == ["hermes-agent", "gpt-oss"])
+        #expect(profile.hermesResponseModel == "Hermes-Agent")
+        #expect(profile.hermesResponseModels == ["Hermes-Agent", "gpt-oss"])
         #expect(profile.hermesV1BaseURL?.absoluteString == "https://hermes.example.com/nadgar/v1")
     }
 
@@ -313,6 +313,26 @@ struct ProviderSettingsTests {
         )
 
         #expect(settings.selectedResponse == TaskModelSelection(profileID: "hermes-1", model: "legacy-model"))
+    }
+
+    @Test func hermesModelIDsPreserveAdvertisedCase() {
+        let hermes = ProviderProfile(
+            id: "hermes-1",
+            type: .hermes,
+            hasAPIKey: true,
+            hermesBaseURL: "https://hermes.example.com/v1",
+            hermesResponseModel: "Hermes-Agent-Pro",
+            hermesResponseModels: [" Hermes-Agent-Pro ", "hermes-agent-pro", "LLM/CaseSensitive"]
+        )
+        let settings = ProviderSettings(
+            providerProfiles: [hermes],
+            selectedResponse: TaskModelSelection(profileID: "hermes-1", model: "Hermes-Agent-Pro")
+        )
+
+        #expect(settings.providerProfiles[0].hermesResponseModel == "Hermes-Agent-Pro")
+        #expect(settings.providerProfiles[0].hermesResponseModels == ["Hermes-Agent-Pro", "LLM/CaseSensitive"])
+        #expect(settings.selectedResponse == TaskModelSelection(profileID: "hermes-1", model: "Hermes-Agent-Pro"))
+        #expect(settings.model == "Hermes-Agent-Pro")
     }
 
     @Test func responseAndSpeechCanUseDifferentProviders() {

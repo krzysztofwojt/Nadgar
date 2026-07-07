@@ -19,7 +19,7 @@ struct HermesModelsResponseTests {
 
         let response = try JSONDecoder().decode(HermesModelsResponse.self, from: data)
 
-        #expect(response.modelIDs == ["hermes-agent", "gpt-oss"])
+        #expect(response.modelIDs == ["Hermes-Agent", "gpt-oss"])
     }
 
     @Test func decodesEmptyModelsList() throws {

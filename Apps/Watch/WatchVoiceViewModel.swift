@@ -532,6 +532,8 @@ final class WatchVoiceViewModel: ObservableObject {
             settings.speechVoicesByProfileID != updatedSettings.speechVoicesByProfileID
         let oldResponseContextID = responseContextProviderID(in: settings)
         let newResponseContextID = responseContextProviderID(in: updatedSettings)
+        let shouldBootstrapResponseContext = oldResponseContextID != newResponseContextID ||
+            responseConnectionChanged(from: settings, to: updatedSettings)
 
         do {
             try configurationStore.saveSettings(updatedSettings)
@@ -542,7 +544,7 @@ final class WatchVoiceViewModel: ObservableObject {
             if shouldStopSpeechPlayback {
                 stopAssistantSpeechPlayback()
             }
-            if oldResponseContextID != newResponseContextID {
+            if shouldBootstrapResponseContext {
                 activeTurnID = UUID()
                 conversation.activeProviderID = newResponseContextID ?? AssistantProviderIDs.openAI
                 conversation.markActiveProviderContextRequiresLocalHistoryBootstrap()
@@ -1405,6 +1407,25 @@ final class WatchVoiceViewModel: ObservableObject {
             for: selectedResponse,
             profile: settings.profile(id: selectedResponse.profileID)
         )
+    }
+
+    private func responseConnectionChanged(from oldSettings: ProviderSettings, to newSettings: ProviderSettings) -> Bool {
+        guard let oldSelection = oldSettings.selectedResponse,
+              let newSelection = newSettings.selectedResponse,
+              oldSelection == newSelection,
+              let oldProfile = oldSettings.profile(id: oldSelection.profileID),
+              let newProfile = newSettings.profile(id: newSelection.profileID),
+              oldProfile.type == newProfile.type
+        else {
+            return false
+        }
+
+        switch newProfile.type {
+        case .hermes:
+            return oldProfile.hermesBaseURL != newProfile.hermesBaseURL
+        case .openAI, .custom:
+            return false
+        }
     }
 
     private func hasAPIKey(profileID: String) -> Bool {
