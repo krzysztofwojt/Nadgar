@@ -444,6 +444,7 @@ final class WatchVoiceViewModel: ObservableObject {
             let previousActiveProviderID = conversation.activeProviderID
             conversation.activeProviderID = turnConfiguration.responseContextProviderID
             if previousActiveProviderID != conversation.activeProviderID {
+                conversation.markActiveProviderContextRequiresLocalHistoryBootstrap()
                 saveConversation()
             }
             let providerContextBeforeLocalTurn = conversation.activeProviderContext
@@ -544,6 +545,7 @@ final class WatchVoiceViewModel: ObservableObject {
             if oldResponseContextID != newResponseContextID {
                 activeTurnID = UUID()
                 conversation.activeProviderID = newResponseContextID ?? AssistantProviderIDs.openAI
+                conversation.markActiveProviderContextRequiresLocalHistoryBootstrap()
                 saveConversation()
                 refreshDisplayMessagesFromConversation()
             }
