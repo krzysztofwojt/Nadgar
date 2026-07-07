@@ -12,6 +12,7 @@ final class WatchVoiceViewModel: ObservableObject {
     private static let assistantFailedPlaceholderText = "Response failed"
     private static let recordingStartFailedPrefix = "Recording could not be started"
     private static let recordingStartFailedText = "\(recordingStartFailedPrefix)."
+    private static let providerConfigurationRequiredText = "Open Nadgar on your iPhone and configure a provider."
     private static let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "app.nadgar.Nadgar.watchkitapp",
         category: "WatchVoiceViewModel"
@@ -26,7 +27,7 @@ final class WatchVoiceViewModel: ObservableObject {
     @Published private(set) var isRecordingLocked = false
 
     var hasAPIKey: Bool {
-        normalizedAPIKey != nil
+        makeTurnConfiguration() != nil
     }
 
     var canBeginRecording: Bool {
@@ -50,6 +51,7 @@ final class WatchVoiceViewModel: ObservableObject {
     private let recorder: WatchPTTRecorder
     private let transcriptionClient: OpenAITranscriptionClient
     private let responsesClient: OpenAIResponsesClient
+    private let hermesResponsesClient: HermesResponsesClient
     private let speechClient: OpenAISpeechClient
     private let speechAudioPipeline: WatchAudioPipeline
     private let assistantProvider: any AssistantConversationProvider
@@ -58,7 +60,7 @@ final class WatchVoiceViewModel: ObservableObject {
     private let openAITestMode: WatchOpenAITestMode
     private var conversation: WatchConversationRecord
     private var conversationRevision = 0
-    private var apiKey: String?
+    private var apiKeys: [String: String]
     private var speechPlaybackTask: Task<Void, Never>?
     private var speechPlaybackID: UUID?
     private var speechFragmentContinuation: AsyncStream<String>.Continuation?
@@ -82,12 +84,28 @@ final class WatchVoiceViewModel: ObservableObject {
         var revision: Int
     }
 
+    private struct WatchTurnConfiguration {
+        var transcriptionProfileID: String
+        var transcriptionModel: String
+        var transcriptionAPIKey: String
+        var responseProfileID: String
+        var responseProfile: ProviderProfile
+        var responseModel: String
+        var responseAPIKey: String
+        var speechProfileID: String?
+        var speechModel: String?
+        var speechAPIKey: String?
+        var responseSettings: ProviderSettings
+        var responseContextProviderID: String
+    }
+
     init(
         connectivity: WatchConnectivityClient = WatchConnectivityClient(),
         configurationStore: WatchConfigurationStore = WatchConfigurationStore(),
         recorder: WatchPTTRecorder? = nil,
         transcriptionClient: OpenAITranscriptionClient = OpenAITranscriptionClient(),
         responsesClient: OpenAIResponsesClient = OpenAIResponsesClient(),
+        hermesResponsesClient: HermesResponsesClient = HermesResponsesClient(),
         speechClient: OpenAISpeechClient = OpenAISpeechClient(),
         speechAudioPipeline: WatchAudioPipeline = WatchAudioPipeline(),
         assistantProvider: (any AssistantConversationProvider)? = nil,
@@ -117,6 +135,7 @@ final class WatchVoiceViewModel: ObservableObject {
         self.recorder = recorder ?? WatchPTTRecorder()
         self.transcriptionClient = transcriptionClient
         self.responsesClient = responsesClient
+        self.hermesResponsesClient = hermesResponsesClient
         self.speechClient = speechClient
         self.speechAudioPipeline = speechAudioPipeline
         self.assistantProvider = assistantProvider ?? OpenAIResponsesConversationProvider(client: responsesClient)
@@ -127,7 +146,11 @@ final class WatchVoiceViewModel: ObservableObject {
         self.conversation = initialConversation
         self.pttState = .ready
         self.settings = localConfiguration.settings
-        self.apiKey = openAITestMode.apiKeyOverride ?? (try? configurationStore.loadAPIKey())
+        self.apiKeys = Self.loadAPIKeys(
+            for: localConfiguration.settings.providerProfiles,
+            configurationStore: configurationStore,
+            openAITestMode: openAITestMode
+        )
         self.messages = displayMessages
         self.timelineItems = timelineFormatter.items(
             for: displayMessages,
@@ -150,17 +173,17 @@ final class WatchVoiceViewModel: ObservableObject {
                 self?.applySettingsOnly(settings)
             }
         }
-        connectivity.onSyncAPIKey = { [weak self] apiKey in
-            self?.syncAPIKeyFromPhone(apiKey) ?? false
+        connectivity.onSyncAPIKey = { [weak self] profileID, apiKey in
+            self?.syncAPIKeyFromPhone(apiKey, profileID: profileID) ?? false
         }
-        connectivity.onDeleteAPIKey = { [weak self] in
-            self?.deleteAPIKeyFromWatch() ?? false
+        connectivity.onDeleteAPIKey = { [weak self] profileID in
+            self?.deleteAPIKeyFromWatch(profileID: profileID) ?? false
         }
         connectivity.onClearConversationHistory = { [weak self] in
             self?.clearConversationHistoryFromPhone() ?? false
         }
-        connectivity.hasLocalAPIKey = { [weak self] in
-            self?.hasAPIKey ?? false
+        connectivity.hasLocalAPIKey = { [weak self] profileID in
+            self?.hasAPIKey(profileID: profileID) ?? false
         }
         connectivity.activate()
 
@@ -220,6 +243,9 @@ final class WatchVoiceViewModel: ObservableObject {
 
         guard canBeginRecording else {
             isPushToTalkHoldActive = false
+            if !hasAPIKey {
+                showProviderConfigurationRequired()
+            }
             Self.logger.info("ptt begin ignored state=\(self.pttState.rawValue, privacy: .public) hasKey=\(self.hasAPIKey, privacy: .public)")
             return
         }
@@ -379,10 +405,11 @@ final class WatchVoiceViewModel: ObservableObject {
         shouldLockPushToTalkAfterStart = false
         shouldCancelPushToTalkAfterStart = false
 
-        guard let apiKey = normalizedAPIKey else {
+        guard let turnConfiguration = makeTurnConfiguration() else {
             recorder.cancel()
-            pttState = .ready
-            errorMessage = nil
+            pttState = .failed
+            errorMessage = Self.providerConfigurationRequiredText
+            showProviderConfigurationRequired()
             return
         }
 
@@ -411,9 +438,15 @@ final class WatchVoiceViewModel: ObservableObject {
                 return
             }
 
-            let transcript = try await transcribe(file: file, apiKey: apiKey)
+            let transcript = try await transcribe(file: file, configuration: turnConfiguration)
             guard activeTurnID == turnID else { return }
 
+            let previousActiveProviderID = conversation.activeProviderID
+            conversation.activeProviderID = turnConfiguration.responseContextProviderID
+            if previousActiveProviderID != conversation.activeProviderID {
+                conversation.markActiveProviderContextRequiresLocalHistoryBootstrap()
+                saveConversation()
+            }
             let providerContextBeforeLocalTurn = conversation.activeProviderContext
             let userMessage = updateTranscribingPlaceholder(id: userPlaceholder.id, transcript: transcript)
             persistMessage(userMessage, marksProviderContextDirty: true)
@@ -423,22 +456,30 @@ final class WatchVoiceViewModel: ObservableObject {
 
             let assistantRequest = makeAssistantTurnRequest(
                 userMessage: userMessage,
-                providerContext: providerContextBeforeLocalTurn
+                providerContext: providerContextBeforeLocalTurn,
+                settings: turnConfiguration.responseSettings
             )
             let assistantMutationGuard = currentConversationMutationGuard()
-            let assistantResult = try await assistantResponse(apiKey: apiKey, request: assistantRequest)
+            let assistantResult = try await assistantResponse(configuration: turnConfiguration, request: assistantRequest)
             guard activeTurnID == turnID,
                   isCurrentConversation(assistantMutationGuard)
             else { return }
 
             let assistantMessage = updateAssistantPlaceholder(id: assistantPlaceholderID, response: assistantResult.response)
             persistAssistantMessage(assistantMessage, providerContext: assistantResult.providerContext)
-            startAssistantSpeechPlaybackIfNeeded(apiKey: apiKey)
+            let speechPlaybackConfiguration = currentSpeechPlaybackConfiguration(
+                responseModel: turnConfiguration.responseModel,
+                transcriptionModel: turnConfiguration.transcriptionModel
+            )
+            startAssistantSpeechPlaybackIfNeeded(
+                apiKey: speechPlaybackConfiguration.apiKey,
+                settings: speechPlaybackConfiguration.settings
+            )
             enqueueAssistantSpeechText(assistantResult.response.text)
             finishAssistantSpeechPlaybackInput()
             pttState = .ready
             errorMessage = nil
-            await updateSummaryIfNeeded(apiKey: apiKey)
+            await updateSummaryIfNeeded(configuration: turnConfiguration)
             Self.logger.info("ptt assistant response appended characters=\(assistantResult.response.text.count, privacy: .public) citations=\(assistantResult.response.citations.count, privacy: .public)")
         } catch {
             guard activeTurnID == turnID else { return }
@@ -480,12 +521,23 @@ final class WatchVoiceViewModel: ObservableObject {
     }
 
     private func applySettings(_ incomingSettings: ProviderSettings) {
+        guard incomingSettings.configurationVersion >= settings.configurationVersion else {
+            Self.logger.info("settings ignored because configurationVersion is stale incoming=\(incomingSettings.configurationVersion, privacy: .public) current=\(self.settings.configurationVersion, privacy: .public)")
+            return
+        }
+
         var updatedSettings = incomingSettings
-        updatedSettings.hasAPIKey = hasAPIKey
+        applyLocalKeyStatuses(to: &updatedSettings)
         let shouldStopSpeechPlayback = settings.isAutoReadEnabled != updatedSettings.isAutoReadEnabled ||
             settings.shouldIgnoreSilentModeForAutoRead != updatedSettings.shouldIgnoreSilentModeForAutoRead ||
             settings.voice != updatedSettings.voice ||
-            settings.ttsModel != updatedSettings.ttsModel
+            settings.ttsModel != updatedSettings.ttsModel ||
+            settings.selectedSpeech != updatedSettings.selectedSpeech ||
+            settings.speechVoicesByProfileID != updatedSettings.speechVoicesByProfileID
+        let oldResponseContextID = responseContextProviderID(in: settings)
+        let newResponseContextID = responseContextProviderID(in: updatedSettings)
+        let shouldBootstrapResponseContext = oldResponseContextID != newResponseContextID ||
+            responseConnectionChanged(from: settings, to: updatedSettings)
 
         do {
             try configurationStore.saveSettings(updatedSettings)
@@ -496,30 +548,37 @@ final class WatchVoiceViewModel: ObservableObject {
             if shouldStopSpeechPlayback {
                 stopAssistantSpeechPlayback()
             }
+            if shouldBootstrapResponseContext {
+                resetInFlightTurnForSettingsBootstrap()
+                conversation.activeProviderID = newResponseContextID ?? AssistantProviderIDs.openAI
+                conversation.markActiveProviderContextRequiresLocalHistoryBootstrap()
+                saveConversation()
+                refreshDisplayMessagesFromConversation()
+            }
             errorMessage = nil
         } catch {
             errorMessage = error.localizedDescription
         }
     }
 
-    private func syncAPIKeyFromPhone(_ incomingAPIKey: String) -> Bool {
+    private func syncAPIKeyFromPhone(_ incomingAPIKey: String, profileID: String) -> Bool {
         guard !openAITestMode.isEnabled else {
             return true
         }
 
         let trimmed = incomingAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
-            return deleteAPIKeyFromWatch()
+            return deleteAPIKeyFromWatch(profileID: profileID)
         }
 
         do {
-            let previousAPIKey = normalizedAPIKey
-            try configurationStore.saveAPIKey(trimmed)
-            apiKey = trimmed
-            setSettingsHasAPIKey(true)
+            let previousAPIKey = normalizedAPIKey(for: profileID)
+            try configurationStore.saveAPIKey(trimmed, for: profileID)
+            apiKeys[profileID] = trimmed
+            setSettingsHasAPIKey(true, for: profileID)
             errorMessage = nil
 
-            if previousAPIKey != trimmed {
+            if settings.selectedResponse?.profileID == profileID, previousAPIKey != trimmed {
                 resetSessionForCredentialChange()
             }
 
@@ -530,31 +589,33 @@ final class WatchVoiceViewModel: ObservableObject {
             return true
         } catch {
             errorMessage = error.localizedDescription
-            return hasAPIKey
+            return hasAPIKey(profileID: profileID)
         }
     }
 
-    private func deleteAPIKeyFromWatch() -> Bool {
+    private func deleteAPIKeyFromWatch(profileID: String) -> Bool {
         guard !openAITestMode.isEnabled else {
             return true
         }
 
         do {
-            try configurationStore.deleteAPIKey()
-            apiKey = nil
-            setSettingsHasAPIKey(false)
+            try configurationStore.deleteAPIKey(for: profileID)
+            apiKeys.removeValue(forKey: profileID)
+            setSettingsHasAPIKey(false, for: profileID)
             errorMessage = nil
-            resetSessionForCredentialChange()
+            if settings.selectedResponse?.profileID == profileID {
+                resetSessionForCredentialChange()
+            }
         } catch {
             errorMessage = error.localizedDescription
         }
 
-        return hasAPIKey
+        return hasAPIKey(profileID: profileID)
     }
 
-    private func setSettingsHasAPIKey(_ hasAPIKey: Bool) {
+    private func setSettingsHasAPIKey(_ hasAPIKey: Bool, for profileID: String) {
         var updatedSettings = settings
-        updatedSettings.hasAPIKey = hasAPIKey
+        updatedSettings.setAPIKeyStatus(hasAPIKey, for: profileID)
         settings = updatedSettings
         try? configurationStore.saveSettings(updatedSettings)
     }
@@ -578,6 +639,22 @@ final class WatchVoiceViewModel: ObservableObject {
         pttState = .ready
     }
 
+    private func resetInFlightTurnForSettingsBootstrap() {
+        activeTurnID = UUID()
+        activeRecordingStartID = nil
+        stopAssistantSpeechPlayback()
+        recorder.cancel()
+        recorder.cleanupTemporaryFiles()
+        isPushToTalkHoldActive = false
+        isRecordingStartPending = false
+        shouldFinishPushToTalkAfterStart = false
+        shouldLockPushToTalkAfterStart = false
+        shouldCancelPushToTalkAfterStart = false
+        isPushToTalkRecording = false
+        isRecordingLocked = false
+        pttState = .ready
+    }
+
     private func prewarmRecorderIfPossible() async {
         guard hasAPIKey else { return }
 
@@ -588,7 +665,10 @@ final class WatchVoiceViewModel: ObservableObject {
         }
     }
 
-    private func transcribe(file: WatchRecordedAudioFile, apiKey: String) async throws -> String {
+    private func transcribe(
+        file: WatchRecordedAudioFile,
+        configuration: WatchTurnConfiguration
+    ) async throws -> String {
         if openAITestMode.isEnabled {
             await openAITestMode.simulateTranscriptionDelay()
 
@@ -602,8 +682,8 @@ final class WatchVoiceViewModel: ObservableObject {
 
         return try await transcriptionClient.transcribe(
             audioURL: file.url,
-            apiKey: apiKey,
-            model: settings.transcriptionModel
+            apiKey: configuration.transcriptionAPIKey,
+            model: configuration.transcriptionModel
         )
     }
 
@@ -623,7 +703,10 @@ final class WatchVoiceViewModel: ObservableObject {
         }
     }
 
-    private func assistantResponse(apiKey: String, request: AssistantTurnRequest) async throws -> AssistantTurnResult {
+    private func assistantResponse(
+        configuration: WatchTurnConfiguration,
+        request: AssistantTurnRequest
+    ) async throws -> AssistantTurnResult {
         if openAITestMode.isEnabled {
             await openAITestMode.simulateResponseDelay()
             let turnNumber = conversation.messages.filter { $0.role == .user && !$0.isPlaceholder }.count
@@ -631,13 +714,30 @@ final class WatchVoiceViewModel: ObservableObject {
             return AssistantTurnResult(
                 response: openAITestMode.assistantResponse(turnNumber: turnNumber),
                 providerContext: ProviderContextState(
-                    providerID: assistantProvider.providerID,
+                    providerID: request.providerContext?.providerID ?? assistantProvider.providerID,
                     lastRemoteTurnID: remoteTurnID
                 )
             )
         }
 
-        return try await assistantProvider.respond(apiKey: apiKey, request: request)
+        switch configuration.responseProfile.type {
+        case .openAI:
+            var scopedRequest = request
+            var providerContext = scopedRequest.providerContext ??
+                ProviderContextState(providerID: configuration.responseContextProviderID)
+            providerContext.providerID = configuration.responseContextProviderID
+            scopedRequest.providerContext = providerContext
+            return try await assistantProvider.respond(apiKey: configuration.responseAPIKey, request: scopedRequest)
+        case .hermes:
+            let provider = HermesResponsesConversationProvider(
+                profile: configuration.responseProfile,
+                providerID: configuration.responseContextProviderID,
+                client: hermesResponsesClient
+            )
+            return try await provider.respond(apiKey: configuration.responseAPIKey, request: request)
+        case .custom:
+            throw AssistantProviderError.notConfigured
+        }
     }
 
     private func assistantResponse(apiKey: String, messages: [ChatMessage]) async throws -> OpenAIAssistantResponse {
@@ -681,7 +781,7 @@ final class WatchVoiceViewModel: ObservableObject {
         var finalResponse: OpenAIAssistantResponse?
         var streamedText = ""
         var speechChunker = AssistantSpeechChunker()
-        startAssistantSpeechPlaybackIfNeeded(apiKey: apiKey)
+        startAssistantSpeechPlaybackIfNeeded(apiKey: apiKey, settings: settings)
         defer {
             flushAssistantSpeechChunks(from: &speechChunker)
             finishAssistantSpeechPlaybackInput()
@@ -731,7 +831,10 @@ final class WatchVoiceViewModel: ObservableObject {
         return finalResponse
     }
 
-    private func startAssistantSpeechPlaybackIfNeeded(apiKey: String) {
+    private func startAssistantSpeechPlaybackIfNeeded(
+        apiKey: String?,
+        settings: ProviderSettings
+    ) {
         stopAssistantSpeechPlayback()
         guard settings.isAutoReadEnabled else {
             Self.logger.info("ptt speech playback skipped reason=auto_read_disabled")
@@ -739,6 +842,10 @@ final class WatchVoiceViewModel: ObservableObject {
         }
         guard !openAITestMode.isEnabled else {
             Self.logger.info("ptt speech playback skipped reason=openai_test_mode")
+            return
+        }
+        guard let apiKey else {
+            Self.logger.info("ptt speech playback skipped reason=speech_provider_not_configured")
             return
         }
 
@@ -795,6 +902,36 @@ final class WatchVoiceViewModel: ObservableObject {
                 Self.logger.error("ptt speech playback failed error=\(error.localizedDescription, privacy: .public)")
             }
         }
+    }
+
+    private func currentSpeechPlaybackConfiguration(
+        responseModel: String,
+        transcriptionModel: String
+    ) -> (apiKey: String?, settings: ProviderSettings) {
+        var playbackSettings = settings
+        applyLocalKeyStatuses(to: &playbackSettings)
+        playbackSettings.model = responseModel
+        playbackSettings.transcriptionModel = transcriptionModel
+        playbackSettings.normalizeSelectionsAfterProfileChange()
+
+        let speechSelection = playbackSettings.selectedSpeech
+        playbackSettings.ttsModel = speechSelection?.model ?? ProviderSettings.defaultTTSModel
+        if let speechProfileID = speechSelection?.profileID,
+           let speechVoice = playbackSettings.speechVoice(for: speechProfileID) {
+            playbackSettings.voice = speechVoice
+        }
+
+        let speechProfile = speechSelection.flatMap { playbackSettings.profile(id: $0.profileID) }
+        let apiKey: String?
+        if playbackSettings.isAutoReadEnabled,
+           let speechProfile,
+           ProviderSettings.speechCapabilities(for: speechProfile) != nil {
+            apiKey = normalizedAPIKey(for: speechProfile.id)
+        } else {
+            apiKey = nil
+        }
+
+        return (apiKey, playbackSettings)
     }
 
     private func enqueueAssistantSpeechChunks(_ chunks: [String]) {
@@ -892,7 +1029,8 @@ final class WatchVoiceViewModel: ObservableObject {
             text == Self.transcriptionFailedPlaceholderText ||
             text.hasPrefix("\(Self.transcriptionFailedPlaceholderText):") ||
             text == Self.recordingStartFailedText ||
-            text.hasPrefix("\(Self.recordingStartFailedPrefix):")
+            text.hasPrefix("\(Self.recordingStartFailedPrefix):") ||
+            text == Self.providerConfigurationRequiredText
     }
 
     private func cancelTranscribingPlaceholder(_ reservation: TranscribingPlaceholderReservation) {
@@ -1078,7 +1216,8 @@ final class WatchVoiceViewModel: ObservableObject {
 
     private func makeAssistantTurnRequest(
         userMessage: ChatMessage,
-        providerContext: ProviderContextState? = nil
+        providerContext: ProviderContextState? = nil,
+        settings: ProviderSettings
     ) -> AssistantTurnRequest {
         AssistantTurnRequest(
             conversationKey: conversation.conversationKey,
@@ -1120,7 +1259,7 @@ final class WatchVoiceViewModel: ObservableObject {
         refreshTimelineItems()
     }
 
-    private func updateSummaryIfNeeded(apiKey: String) async {
+    private func updateSummaryIfNeeded(configuration: WatchTurnConfiguration) async {
         let currentEpochMessages = conversation.currentEpochMessages
         guard currentEpochMessages.count > StandalonePTTDefaults.rawRecoveryMessagesLimit else { return }
 
@@ -1134,15 +1273,32 @@ final class WatchVoiceViewModel: ObservableObject {
             currentSummary: conversation.humanSummaryForCurrentEpoch,
             messages: messagesToSummarize,
             throughMessageID: throughMessageId,
-            settings: settings
+            settings: configuration.responseSettings
         )
         let mutationGuard = currentConversationMutationGuard()
 
         do {
-            guard let result = try await assistantProvider.summarizeIfNeeded(
-                apiKey: apiKey,
-                request: summaryRequest
-            ) else { return }
+            let result: ConversationSummaryResult?
+            switch configuration.responseProfile.type {
+            case .openAI:
+                result = try await assistantProvider.summarizeIfNeeded(
+                    apiKey: configuration.responseAPIKey,
+                    request: summaryRequest
+                )
+            case .hermes:
+                let provider = HermesResponsesConversationProvider(
+                    profile: configuration.responseProfile,
+                    providerID: configuration.responseContextProviderID,
+                    client: hermesResponsesClient
+                )
+                result = try await provider.summarizeIfNeeded(
+                    apiKey: configuration.responseAPIKey,
+                    request: summaryRequest
+                )
+            case .custom:
+                result = nil
+            }
+            guard let result else { return }
             guard isCurrentConversation(mutationGuard) else { return }
 
             let hasTransientPlaceholders = messages.contains { $0.isPlaceholder }
@@ -1224,13 +1380,147 @@ final class WatchVoiceViewModel: ObservableObject {
         )
     }
 
-    private var normalizedAPIKey: String? {
+    private func showProviderConfigurationRequired() {
+        let reservation = reserveTranscribingPlaceholder()
+        updateMessage(id: reservation.id) { message in
+            message.role = .user
+            message.text = Self.providerConfigurationRequiredText
+            message.citations = []
+            message.isPlaceholder = true
+        } fallback: {
+            self.messages.append(
+                ChatMessage(
+                    id: reservation.id,
+                    role: .user,
+                    text: Self.providerConfigurationRequiredText,
+                    isPlaceholder: true
+                )
+            )
+        }
+        refreshTimelineItems()
+    }
+
+    private func makeTurnConfiguration() -> WatchTurnConfiguration? {
+        guard let transcriptionSelection = settings.selectedTranscription,
+              let transcriptionProfile = settings.profile(id: transcriptionSelection.profileID),
+              transcriptionProfile.type == .openAI,
+              let responseSelection = settings.selectedResponse,
+              let responseProfile = settings.profile(id: responseSelection.profileID),
+              responseProfile.type.supportsResponses,
+              responseProfile.type != .hermes || responseProfile.hasValidHermesBaseURL,
+              let transcriptionAPIKey = normalizedAPIKey(for: transcriptionProfile.id),
+              let responseAPIKey = normalizedAPIKey(for: responseProfile.id)
+        else {
+            return nil
+        }
+
+        var responseSettings = settings
+        applyLocalKeyStatuses(to: &responseSettings)
+        responseSettings.model = responseSelection.model
+        responseSettings.transcriptionModel = transcriptionSelection.model
+        responseSettings.normalizeSelectionsAfterProfileChange()
+        let speechSelection = responseSettings.selectedSpeech
+        responseSettings.ttsModel = speechSelection?.model ?? ProviderSettings.defaultTTSModel
+        if let speechProfileID = speechSelection?.profileID,
+           let speechVoice = responseSettings.speechVoice(for: speechProfileID) {
+            responseSettings.voice = speechVoice
+        }
+        let speechProfile = speechSelection.flatMap { responseSettings.profile(id: $0.profileID) }
+        let speechAPIKey: String?
+        if responseSettings.isAutoReadEnabled,
+           let speechProfile,
+           ProviderSettings.speechCapabilities(for: speechProfile) != nil {
+            speechAPIKey = normalizedAPIKey(for: speechProfile.id)
+        } else {
+            speechAPIKey = nil
+        }
+
+        return WatchTurnConfiguration(
+            transcriptionProfileID: transcriptionProfile.id,
+            transcriptionModel: transcriptionSelection.model,
+            transcriptionAPIKey: transcriptionAPIKey,
+            responseProfileID: responseProfile.id,
+            responseProfile: responseProfile,
+            responseModel: responseSelection.model,
+            responseAPIKey: responseAPIKey,
+            speechProfileID: speechProfile?.id,
+            speechModel: speechSelection?.model,
+            speechAPIKey: speechAPIKey,
+            responseSettings: responseSettings,
+            responseContextProviderID: ProviderSettings.contextProviderID(for: responseSelection, profile: responseProfile)
+        )
+    }
+
+    private func responseContextProviderID(in settings: ProviderSettings) -> String? {
+        guard let selectedResponse = settings.selectedResponse else { return nil }
+        return ProviderSettings.contextProviderID(
+            for: selectedResponse,
+            profile: settings.profile(id: selectedResponse.profileID)
+        )
+    }
+
+    private func responseConnectionChanged(from oldSettings: ProviderSettings, to newSettings: ProviderSettings) -> Bool {
+        guard let oldSelection = oldSettings.selectedResponse,
+              let newSelection = newSettings.selectedResponse,
+              oldSelection == newSelection,
+              let oldProfile = oldSettings.profile(id: oldSelection.profileID),
+              let newProfile = newSettings.profile(id: newSelection.profileID),
+              oldProfile.type == newProfile.type
+        else {
+            return false
+        }
+
+        switch newProfile.type {
+        case .hermes:
+            return oldProfile.hermesBaseURL != newProfile.hermesBaseURL
+        case .openAI, .custom:
+            return false
+        }
+    }
+
+    private func hasAPIKey(profileID: String) -> Bool {
+        normalizedAPIKey(for: profileID) != nil
+    }
+
+    private func normalizedAPIKey(for profileID: String) -> String? {
         if let apiKeyOverride = openAITestMode.apiKeyOverride {
             return apiKeyOverride
         }
 
-        let trimmed = apiKey?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = apiKeys[profileID]?.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed?.isEmpty == false ? trimmed : nil
+    }
+
+    private func applyLocalKeyStatuses(to settings: inout ProviderSettings) {
+        for profile in settings.providerProfiles {
+            settings.setAPIKeyStatus(hasAPIKey(profileID: profile.id), for: profile.id)
+        }
+    }
+
+    private static func loadAPIKeys(
+        for profiles: [ProviderProfile],
+        configurationStore: WatchConfigurationStore,
+        openAITestMode: WatchOpenAITestMode
+    ) -> [String: String] {
+        guard !openAITestMode.isEnabled else {
+            return Dictionary(
+                uniqueKeysWithValues: profiles
+                    .filter { $0.type.supportsAPIKey }
+                    .map { ($0.id, openAITestMode.apiKeyOverride ?? "__nadgar_mock_openai__") }
+            )
+        }
+
+        var apiKeys: [String: String] = [:]
+        for profile in profiles where profile.type.supportsAPIKey {
+            guard let apiKey = try? configurationStore.loadAPIKey(for: profile.id)?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+                !apiKey.isEmpty
+            else {
+                continue
+            }
+            apiKeys[profile.id] = apiKey
+        }
+        return apiKeys
     }
 }
 
@@ -1436,84 +1726,103 @@ struct WatchConfigurationStore {
 
     func loadConfiguration() -> WatchConfiguration {
         let settings = loadSettings()
-        return WatchConfiguration(settings: settings, hasAPIKey: apiKeyStore.hasAPIKey())
+        return WatchConfiguration(settings: settings)
     }
 
     func saveSettings(_ settings: ProviderSettings) throws {
-        var normalizedSettings = settings
-        normalizedSettings.hasAPIKey = apiKeyStore.hasAPIKey()
+        let normalizedSettings = settingsWithKeyStatuses(settings)
         let data = try JSONEncoder().encode(normalizedSettings)
         defaults.set(data, forKey: settingsKey)
     }
 
-    func saveAPIKey(_ apiKey: String) throws {
-        try apiKeyStore.saveAPIKey(apiKey)
+    func saveAPIKey(_ apiKey: String, for profileID: String) throws {
+        try apiKeyStore.saveAPIKey(apiKey, for: profileID)
     }
 
-    func loadAPIKey() throws -> String? {
-        try apiKeyStore.loadAPIKey()
+    func loadAPIKey(for profileID: String) throws -> String? {
+        try apiKeyStore.loadAPIKey(for: profileID)
     }
 
-    func deleteAPIKey() throws {
-        try apiKeyStore.deleteAPIKey()
+    func deleteAPIKey(for profileID: String) throws {
+        try apiKeyStore.deleteAPIKey(for: profileID)
     }
 
     private func loadSettings() -> ProviderSettings {
         guard let data = defaults.data(forKey: settingsKey),
-              var settings = try? JSONDecoder().decode(ProviderSettings.self, from: data)
+              let settings = try? JSONDecoder().decode(ProviderSettings.self, from: data)
         else {
-            var defaults = ProviderSettings.default
-            defaults.hasAPIKey = apiKeyStore.hasAPIKey()
-            return defaults
+            return settingsWithKeyStatuses(.default)
         }
 
-        settings.hasAPIKey = apiKeyStore.hasAPIKey()
-        return settings
+        return settingsWithKeyStatuses(settings)
+    }
+
+    private func settingsWithKeyStatuses(_ settings: ProviderSettings) -> ProviderSettings {
+        var normalizedSettings = settings
+        for profile in normalizedSettings.providerProfiles {
+            normalizedSettings.setAPIKeyStatus(apiKeyStore.hasAPIKey(for: profile.id), for: profile.id)
+        }
+        normalizedSettings.normalizeSelectionsAfterProfileChange()
+        return normalizedSettings
     }
 }
 
 private struct WatchAPIKeyStore: APIKeyStore {
-    private let service = "app.nadgar.Nadgar.OpenAI"
-    private let legacyServices: [String] = []
-    private let account = "openai-api-key"
+    private let profileScopedService = "app.nadgar.Nadgar.ProviderAPIKeys"
+    private let legacyOpenAIService = "app.nadgar.Nadgar.OpenAI"
+    private let legacyOpenAIAccount = "openai-api-key"
 
-    func saveAPIKey(_ apiKey: String) throws {
-        try upsertAPIKey(apiKey, service: service)
-        try deleteAPIKey(services: legacyServices)
+    func saveAPIKey(_ apiKey: String, for profileID: String) throws {
+        let account = normalizedProfileID(profileID)
+        try upsertAPIKey(apiKey, service: profileScopedService, account: account)
+
+        if account == ProviderProfile.legacyOpenAIProfileID {
+            try deleteAPIKey(ignoringMissing: true, service: legacyOpenAIService, account: legacyOpenAIAccount)
+        }
     }
 
-    func loadAPIKey() throws -> String? {
-        if let apiKey = try loadAPIKey(from: service) {
+    func loadAPIKey(for profileID: String) throws -> String? {
+        let account = normalizedProfileID(profileID)
+        if let apiKey = try loadAPIKey(service: profileScopedService, account: account) {
             return apiKey
         }
 
-        for legacyService in legacyServices {
-            if let apiKey = try loadAPIKey(from: legacyService) {
-                try saveAPIKey(apiKey)
-                return apiKey
-            }
+        guard account == ProviderProfile.legacyOpenAIProfileID,
+              let legacyAPIKey = try loadAPIKey(service: legacyOpenAIService, account: legacyOpenAIAccount)
+        else {
+            return nil
         }
 
-        return nil
+        try upsertAPIKey(legacyAPIKey, service: profileScopedService, account: account)
+        if try loadAPIKey(service: profileScopedService, account: account) == legacyAPIKey {
+            try deleteAPIKey(ignoringMissing: true, service: legacyOpenAIService, account: legacyOpenAIAccount)
+        }
+        return legacyAPIKey
     }
 
-    func deleteAPIKey() throws {
-        try deleteAPIKey(services: allServices)
+    func deleteAPIKey(for profileID: String) throws {
+        let account = normalizedProfileID(profileID)
+        try deleteAPIKey(ignoringMissing: false, service: profileScopedService, account: account)
+
+        if account == ProviderProfile.legacyOpenAIProfileID {
+            try deleteAPIKey(ignoringMissing: true, service: legacyOpenAIService, account: legacyOpenAIAccount)
+        }
     }
 
-    func hasAPIKey() -> Bool {
-        guard let apiKey = try? loadAPIKey() else {
+    func hasAPIKey(for profileID: String) -> Bool {
+        guard let apiKey = try? loadAPIKey(for: profileID) else {
             return false
         }
 
         return !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    private var allServices: [String] {
-        [service] + legacyServices
+    private func normalizedProfileID(_ profileID: String) -> String {
+        let trimmed = profileID.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? ProviderProfile.legacyOpenAIProfileID : trimmed
     }
 
-    private func loadAPIKey(from service: String) throws -> String? {
+    private func loadAPIKey(service: String, account: String) throws -> String? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -1542,7 +1851,7 @@ private struct WatchAPIKeyStore: APIKeyStore {
         return apiKey
     }
 
-    private func upsertAPIKey(_ apiKey: String, service: String) throws {
+    private func upsertAPIKey(_ apiKey: String, service: String, account: String) throws {
         let data = Data(apiKey.utf8)
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
@@ -1573,18 +1882,20 @@ private struct WatchAPIKeyStore: APIKeyStore {
         }
     }
 
-    private func deleteAPIKey(services: [String]) throws {
-        for service in services {
-            let query: [String: Any] = [
-                kSecClass as String: kSecClassGenericPassword,
-                kSecAttrService as String: service,
-                kSecAttrAccount as String: account
-            ]
+    private func deleteAPIKey(ignoringMissing: Bool, service: String, account: String) throws {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account
+        ]
 
-            let status = SecItemDelete(query as CFDictionary)
-            guard status == errSecSuccess || status == errSecItemNotFound else {
-                throw WatchAPIKeyStoreError.unhandledStatus(status)
-            }
+        let status = SecItemDelete(query as CFDictionary)
+        if status == errSecItemNotFound && ignoringMissing {
+            return
+        }
+
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            throw WatchAPIKeyStoreError.unhandledStatus(status)
         }
     }
 }
@@ -1598,7 +1909,19 @@ private enum WatchAPIKeyStoreError: LocalizedError, Equatable {
         case .invalidData:
             return "The saved API key could not be decoded."
         case .unhandledStatus(let status):
-            return "Keychain failed with status \(status)."
+            return "Keychain is unavailable: \(Self.statusDescription(status)) (status \(status))."
         }
+    }
+
+    private static func statusDescription(_ status: OSStatus) -> String {
+        if status == errSecMissingEntitlement {
+            return "this build is missing the Keychain entitlement."
+        }
+
+        if let message = SecCopyErrorMessageString(status, nil) {
+            return message as String
+        }
+
+        return "Security framework returned an unknown error."
     }
 }

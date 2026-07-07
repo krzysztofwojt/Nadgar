@@ -44,15 +44,8 @@ struct ChatTimelineTests {
         #expect(formatter.dayDividerTitle(for: dayBeforeYesterday, now: now) == "Przedwczoraj")
     }
 
-    @Test func markersHaveStableIdentity() throws {
+    @Test func historyMarkerHasStableIdentity() throws {
         let formatter = ChatTimelineFormatter(calendar: calendar, locale: Locale(identifier: "en_US"))
-        let resetEvent = ConversationEvent(
-            id: UUID(uuidString: "11111111-1111-1111-1111-111111111111")!,
-            kind: .contextReset,
-            createdAt: Date(timeIntervalSince1970: 10),
-            providerID: AssistantProviderIDs.openAI,
-            contextEpochID: UUID(uuidString: "22222222-2222-2222-2222-222222222222")!
-        )
         let message = ChatMessage(
             role: .assistant,
             text: "After reset",
@@ -64,7 +57,6 @@ struct ChatTimelineTests {
             hasEarlierMessages: true,
             hasSummarizedEarlierContext: true,
             lastContextResetAt: nil,
-            events: [resetEvent],
             now: Date(timeIntervalSince1970: 20)
         )
 
@@ -74,11 +66,10 @@ struct ChatTimelineTests {
         } else {
             Issue.record("Expected first item to be the history marker.")
         }
-        #expect(items.map(\.id).contains("notice-context-reset-11111111-1111-1111-1111-111111111111"))
         #expect(items.map(\.id).contains("message-\(message.id.uuidString)"))
     }
 
-    @Test func resetEventAfterNewestMessageStillEmitsMarker() throws {
+    @Test func resetEventAfterNewestMessageDoesNotEmitVisibleMarker() throws {
         let formatter = ChatTimelineFormatter(calendar: calendar, locale: Locale(identifier: "en_US"))
         let message = ChatMessage(
             role: .assistant,
@@ -103,12 +94,11 @@ struct ChatTimelineTests {
         )
 
         #expect(items.map(\.id) == [
-            "message-\(message.id.uuidString)",
-            "notice-context-reset-33333333-3333-3333-3333-333333333333"
+            "message-\(message.id.uuidString)"
         ])
     }
 
-    @Test func resetEventBetweenMessagesEmitsInChronologicalPosition() throws {
+    @Test func resetEventBetweenMessagesDoesNotEmitVisibleMarker() throws {
         let formatter = ChatTimelineFormatter(calendar: calendar, locale: Locale(identifier: "en_US"))
         let before = ChatMessage(
             role: .user,
@@ -139,7 +129,6 @@ struct ChatTimelineTests {
 
         #expect(items.map(\.id) == [
             "message-\(before.id.uuidString)",
-            "notice-context-reset-44444444-4444-4444-4444-444444444444",
             "message-\(after.id.uuidString)"
         ])
     }

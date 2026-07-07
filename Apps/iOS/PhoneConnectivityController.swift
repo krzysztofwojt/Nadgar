@@ -5,25 +5,28 @@ import NadgarShared
 
 final class PhoneConnectivityController: NSObject, WCSessionDelegate {
     private let settingsProvider: @MainActor () -> ProviderSettings
-    private let apiKeyProvider: () throws -> String?
-    private let pendingWatchKeyDeletionProvider: @MainActor () -> Bool
+    private let apiKeyProvider: (String) throws -> String?
+    private let pendingWatchKeyDeletionProvider: @MainActor (String) -> Bool
+    private let pendingWatchKeyDeletionIDsProvider: @MainActor () -> [String]
     private let pendingConversationClearProvider: @MainActor () -> Bool
     private let statusHandler: @MainActor (String) -> Void
     private let errorHandler: @MainActor (String) -> Void
-    private let watchKeyStatusHandler: @MainActor (Bool) -> Void
+    private let watchKeyStatusHandler: @MainActor (String?, Bool) -> Void
 
     init(
         settingsProvider: @escaping @MainActor () -> ProviderSettings,
-        apiKeyProvider: @escaping () throws -> String?,
-        pendingWatchKeyDeletionProvider: @escaping @MainActor () -> Bool,
+        apiKeyProvider: @escaping (String) throws -> String?,
+        pendingWatchKeyDeletionProvider: @escaping @MainActor (String) -> Bool,
+        pendingWatchKeyDeletionIDsProvider: @escaping @MainActor () -> [String],
         pendingConversationClearProvider: @escaping @MainActor () -> Bool,
         statusHandler: @escaping @MainActor (String) -> Void,
         errorHandler: @escaping @MainActor (String) -> Void,
-        watchKeyStatusHandler: @escaping @MainActor (Bool) -> Void
+        watchKeyStatusHandler: @escaping @MainActor (String?, Bool) -> Void
     ) {
         self.settingsProvider = settingsProvider
         self.apiKeyProvider = apiKeyProvider
         self.pendingWatchKeyDeletionProvider = pendingWatchKeyDeletionProvider
+        self.pendingWatchKeyDeletionIDsProvider = pendingWatchKeyDeletionIDsProvider
         self.pendingConversationClearProvider = pendingConversationClearProvider
         self.statusHandler = statusHandler
         self.errorHandler = errorHandler
@@ -73,25 +76,25 @@ final class PhoneConnectivityController: NSObject, WCSessionDelegate {
     }
 
     @discardableResult
-    func syncAPIKeyToWatch(_ apiKey: String) -> Bool {
+    func syncAPIKeyToWatch(_ apiKey: String, profileID: String) -> Bool {
         sendMessageToReachableWatch(
-            .syncAPIKey(apiKey),
+            .syncAPIKey(profileID: profileID, apiKey: apiKey),
             unavailableStatus: "API key saved on iPhone. Open Nadgar on Apple Watch to sync."
         )
     }
 
     @discardableResult
-    func sendDeleteAPIKeyToWatch() -> Bool {
+    func sendDeleteAPIKeyToWatch(profileID: String) -> Bool {
         sendMessageToReachableWatch(
-            .deleteAPIKey,
+            .deleteAPIKey(profileID: profileID),
             unavailableStatus: "Open Nadgar on Apple Watch to finish deleting the key there."
         )
     }
 
     @discardableResult
-    func sendMissingAPIKeyStatusToWatch() -> Bool {
+    func sendMissingAPIKeyStatusToWatch(profileID: String) -> Bool {
         sendMessageToReachableWatch(
-            .keyStatusResponse(hasKey: false),
+            .keyStatusResponse(profileID: profileID, hasKey: false),
             unavailableStatus: "Open Nadgar on Apple Watch to refresh API key status."
         )
     }
@@ -195,24 +198,25 @@ final class PhoneConnectivityController: NSObject, WCSessionDelegate {
                 let settings = await MainActor.run { settingsProvider() }
                 return reply(.settingsChanged(settings))
 
-            case .keyStatusRequest:
-                if let apiKey = try apiKeyProvider(),
+            case .keyStatusRequest(let profileID):
+                let resolvedProfileID = Self.resolvedProfileID(profileID)
+                if let apiKey = try apiKeyProvider(resolvedProfileID),
                    !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    return reply(.syncAPIKey(apiKey))
+                    return reply(.syncAPIKey(profileID: resolvedProfileID, apiKey: apiKey))
                 }
 
                 let hasPendingWatchDeletion = await MainActor.run {
-                    pendingWatchKeyDeletionProvider()
+                    pendingWatchKeyDeletionProvider(resolvedProfileID)
                 }
                 if hasPendingWatchDeletion {
-                    return reply(.deleteAPIKey)
+                    return reply(.deleteAPIKey(profileID: resolvedProfileID))
                 }
 
-                return reply(.keyStatusResponse(hasKey: false))
+                return reply(.keyStatusResponse(profileID: resolvedProfileID, hasKey: false))
 
-            case .keyStatusResponse(let hasKey):
+            case .keyStatusResponse(let profileID, let hasKey):
                 await MainActor.run {
-                    watchKeyStatusHandler(hasKey)
+                    watchKeyStatusHandler(profileID, hasKey)
                 }
                 return [:]
 
@@ -334,8 +338,7 @@ final class PhoneConnectivityController: NSObject, WCSessionDelegate {
 
     private func currentConfiguration() async throws -> WatchConfiguration {
         let settings = await MainActor.run { settingsProvider() }
-        let hasAPIKey = try apiKeyProvider()?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
-        return WatchConfiguration(settings: settings, hasAPIKey: hasAPIKey)
+        return WatchConfiguration(settings: settings)
     }
 
     func sendCurrentKeyStateToReachableWatch() {
@@ -346,21 +349,27 @@ final class PhoneConnectivityController: NSObject, WCSessionDelegate {
 
         Task {
             do {
-                if let apiKey = try apiKeyProvider(),
-                   !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    syncAPIKeyToWatch(apiKey)
-                    return
-                }
+                let settings = await MainActor.run { settingsProvider() }
+                let pendingDeletionIDs = await MainActor.run { pendingWatchKeyDeletionIDsProvider() }
+                let profileIDs = Self.profileIDsForKeySync(settings: settings, pendingDeletionIDs: pendingDeletionIDs)
 
-                let hasPendingWatchDeletion = await MainActor.run {
-                    pendingWatchKeyDeletionProvider()
-                }
-                if hasPendingWatchDeletion {
-                    sendDeleteAPIKeyToWatch()
-                    return
-                }
+                for profileID in profileIDs {
+                    if let apiKey = try apiKeyProvider(profileID),
+                       !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        syncAPIKeyToWatch(apiKey, profileID: profileID)
+                        continue
+                    }
 
-                sendMissingAPIKeyStatusToWatch()
+                    let hasPendingWatchDeletion = await MainActor.run {
+                        pendingWatchKeyDeletionProvider(profileID)
+                    }
+                    if hasPendingWatchDeletion {
+                        sendDeleteAPIKeyToWatch(profileID: profileID)
+                        continue
+                    }
+
+                    sendMissingAPIKeyStatusToWatch(profileID: profileID)
+                }
             } catch {
                 await MainActor.run {
                     errorHandler(error.localizedDescription)
@@ -414,9 +423,9 @@ final class PhoneConnectivityController: NSObject, WCSessionDelegate {
                     let decoded = try WatchToPhoneMessage(envelope: envelope)
 
                     switch decoded {
-                    case .keyStatusResponse(let hasKey):
+                    case .keyStatusResponse(let profileID, let hasKey):
                         Task { @MainActor in
-                            watchKeyStatusHandler(hasKey)
+                            watchKeyStatusHandler(profileID, hasKey)
                             statusHandler(hasKey ? "Watch: API key synced" : "Watch: API key deleted")
                         }
                     case .conversationHistoryCleared:
@@ -447,5 +456,43 @@ final class PhoneConnectivityController: NSObject, WCSessionDelegate {
         )
 
         return true
+    }
+
+    private static func resolvedProfileID(_ profileID: String?) -> String {
+        let trimmed = profileID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? ProviderProfile.legacyOpenAIProfileID : trimmed
+    }
+
+    private static func profileIDsForKeySync(
+        settings: ProviderSettings,
+        pendingDeletionIDs: [String]
+    ) -> [String] {
+        var ids: [String] = []
+        var seen = Set<String>()
+
+        func append(_ id: String) {
+            let resolved = resolvedProfileID(id)
+            guard !seen.contains(resolved) else { return }
+            seen.insert(resolved)
+            ids.append(resolved)
+        }
+
+        for profile in settings.providerProfiles where profile.type.supportsAPIKey {
+            append(profile.id)
+        }
+        if let profileID = settings.selectedResponse?.profileID {
+            append(profileID)
+        }
+        if let profileID = settings.selectedTranscription?.profileID {
+            append(profileID)
+        }
+        if let profileID = settings.selectedSpeech?.profileID {
+            append(profileID)
+        }
+        for pendingDeletionID in pendingDeletionIDs {
+            append(pendingDeletionID)
+        }
+
+        return ids
     }
 }

@@ -43,7 +43,7 @@ struct WatchConnectivityMessagesTests {
     }
 
     @Test func phoneSyncAPIKeyRoundTripsThroughDictionaryEnvelope() throws {
-        let original = PhoneToWatchMessage.syncAPIKey("sk-test")
+        let original = PhoneToWatchMessage.syncAPIKey(profileID: "provider-1", apiKey: "sk-test")
 
         let envelope = try MessageEnvelope(dictionary: original.envelope().dictionary())
         let decoded = try PhoneToWatchMessage(envelope: envelope)
@@ -52,7 +52,7 @@ struct WatchConnectivityMessagesTests {
     }
 
     @Test func phoneDeleteAPIKeyRoundTripsThroughDictionaryEnvelope() throws {
-        let original = PhoneToWatchMessage.deleteAPIKey
+        let original = PhoneToWatchMessage.deleteAPIKey(profileID: "provider-1")
 
         let envelope = try MessageEnvelope(dictionary: original.envelope().dictionary())
         let decoded = try PhoneToWatchMessage(envelope: envelope)
@@ -70,7 +70,7 @@ struct WatchConnectivityMessagesTests {
     }
 
     @Test func phoneKeyStatusResponseRoundTripsThroughDictionaryEnvelope() throws {
-        let original = PhoneToWatchMessage.keyStatusResponse(hasKey: true)
+        let original = PhoneToWatchMessage.keyStatusResponse(profileID: "provider-1", hasKey: true)
 
         let envelope = try MessageEnvelope(dictionary: original.envelope().dictionary())
         let decoded = try PhoneToWatchMessage(envelope: envelope)
@@ -106,7 +106,7 @@ struct WatchConnectivityMessagesTests {
     }
 
     @Test func watchKeyStatusRequestRoundTripsThroughDictionaryEnvelope() throws {
-        let original = WatchToPhoneMessage.keyStatusRequest
+        let original = WatchToPhoneMessage.keyStatusRequest(profileID: "provider-1")
 
         let envelope = try MessageEnvelope(dictionary: original.envelope().dictionary())
         let decoded = try WatchToPhoneMessage(envelope: envelope)
@@ -115,7 +115,7 @@ struct WatchConnectivityMessagesTests {
     }
 
     @Test func watchKeyStatusResponseRoundTripsThroughDictionaryEnvelope() throws {
-        let original = WatchToPhoneMessage.keyStatusResponse(hasKey: false)
+        let original = WatchToPhoneMessage.keyStatusResponse(profileID: "provider-1", hasKey: false)
 
         let envelope = try MessageEnvelope(dictionary: original.envelope().dictionary())
         let decoded = try WatchToPhoneMessage(envelope: envelope)

@@ -31,12 +31,12 @@ private func testMessageRoundTrip() throws {
     let decodedResponse = try PhoneToWatchMessage(envelope: responseEnvelope)
     try require(decodedResponse == response)
 
-    let sync = PhoneToWatchMessage.syncAPIKey("sk-test")
+    let sync = PhoneToWatchMessage.syncAPIKey(profileID: "provider-1", apiKey: "sk-test")
     let syncEnvelope = try MessageEnvelope(dictionary: sync.envelope().dictionary())
     let decodedSync = try PhoneToWatchMessage(envelope: syncEnvelope)
     try require(decodedSync == sync)
 
-    let status = WatchToPhoneMessage.keyStatusResponse(hasKey: true)
+    let status = WatchToPhoneMessage.keyStatusResponse(profileID: "provider-1", hasKey: true)
     let statusEnvelope = try MessageEnvelope(dictionary: status.envelope().dictionary())
     let decodedStatus = try WatchToPhoneMessage(envelope: statusEnvelope)
     try require(decodedStatus == status)
