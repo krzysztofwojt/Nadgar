@@ -467,9 +467,13 @@ final class WatchVoiceViewModel: ObservableObject {
 
             let assistantMessage = updateAssistantPlaceholder(id: assistantPlaceholderID, response: assistantResult.response)
             persistAssistantMessage(assistantMessage, providerContext: assistantResult.providerContext)
+            let speechPlaybackConfiguration = currentSpeechPlaybackConfiguration(
+                responseModel: turnConfiguration.responseModel,
+                transcriptionModel: turnConfiguration.transcriptionModel
+            )
             startAssistantSpeechPlaybackIfNeeded(
-                apiKey: turnConfiguration.speechAPIKey,
-                settings: turnConfiguration.responseSettings
+                apiKey: speechPlaybackConfiguration.apiKey,
+                settings: speechPlaybackConfiguration.settings
             )
             enqueueAssistantSpeechText(assistantResult.response.text)
             finishAssistantSpeechPlaybackInput()
@@ -898,6 +902,36 @@ final class WatchVoiceViewModel: ObservableObject {
                 Self.logger.error("ptt speech playback failed error=\(error.localizedDescription, privacy: .public)")
             }
         }
+    }
+
+    private func currentSpeechPlaybackConfiguration(
+        responseModel: String,
+        transcriptionModel: String
+    ) -> (apiKey: String?, settings: ProviderSettings) {
+        var playbackSettings = settings
+        applyLocalKeyStatuses(to: &playbackSettings)
+        playbackSettings.model = responseModel
+        playbackSettings.transcriptionModel = transcriptionModel
+        playbackSettings.normalizeSelectionsAfterProfileChange()
+
+        let speechSelection = playbackSettings.selectedSpeech
+        playbackSettings.ttsModel = speechSelection?.model ?? ProviderSettings.defaultTTSModel
+        if let speechProfileID = speechSelection?.profileID,
+           let speechVoice = playbackSettings.speechVoice(for: speechProfileID) {
+            playbackSettings.voice = speechVoice
+        }
+
+        let speechProfile = speechSelection.flatMap { playbackSettings.profile(id: $0.profileID) }
+        let apiKey: String?
+        if playbackSettings.isAutoReadEnabled,
+           let speechProfile,
+           ProviderSettings.speechCapabilities(for: speechProfile) != nil {
+            apiKey = normalizedAPIKey(for: speechProfile.id)
+        } else {
+            apiKey = nil
+        }
+
+        return (apiKey, playbackSettings)
     }
 
     private func enqueueAssistantSpeechChunks(_ chunks: [String]) {
