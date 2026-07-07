@@ -24,6 +24,21 @@ public struct OpenAIModelOption: Equatable, Hashable, Identifiable, Sendable {
     }
 }
 
+public struct ProviderSpeechCapabilities: Equatable, Sendable {
+    public var supportsVoiceSelection: Bool { !voices.isEmpty }
+
+    public let models: [OpenAIModelOption]
+    public let voices: [RealtimeVoiceOption]
+
+    public init(
+        models: [OpenAIModelOption],
+        voices: [RealtimeVoiceOption] = []
+    ) {
+        self.models = models
+        self.voices = voices
+    }
+}
+
 public enum ProviderType: String, Codable, CaseIterable, Equatable, Hashable, Sendable {
     case openAI = "openAI"
     case hermes
@@ -310,6 +325,7 @@ public struct ProviderSettings: Codable, Equatable, Sendable {
     public var selectedTranscription: TaskModelSelection?
     public var selectedSpeech: TaskModelSelection?
     public var configurationVersion: Int
+    public var speechVoicesByProfileID: [String: String]
     public var voice: String
     public var instructions: String
     public var isAutoReadEnabled: Bool
@@ -326,6 +342,7 @@ public struct ProviderSettings: Codable, Equatable, Sendable {
         selectedTranscription: TaskModelSelection? = nil,
         selectedSpeech: TaskModelSelection? = nil,
         configurationVersion: Int = 0,
+        speechVoicesByProfileID: [String: String] = [:],
         voice: String = Self.defaultVoice,
         instructions: String = Self.defaultInstructions,
         isAutoReadEnabled: Bool = false,
@@ -367,11 +384,20 @@ public struct ProviderSettings: Codable, Equatable, Sendable {
             task: .speech
         )
         self.configurationVersion = max(0, configurationVersion)
-        self.voice = Self.normalizedVoice(voice)
+        self.speechVoicesByProfileID = Self.normalizedSpeechVoices(
+            speechVoicesByProfileID,
+            profiles: normalizedProfiles
+        )
+        self.voice = Self.activeSpeechVoice(
+            selectedSpeech: self.selectedSpeech,
+            speechVoicesByProfileID: self.speechVoicesByProfileID,
+            fallbackVoice: Self.normalizedVoice(voice),
+            profiles: normalizedProfiles
+        ) ?? Self.normalizedVoice(voice)
         self.instructions = instructions
         self.isAutoReadEnabled = isAutoReadEnabled
         self.shouldIgnoreSilentModeForAutoRead = shouldIgnoreSilentModeForAutoRead
-        self.ttsModel = Self.normalizedTTSModel(ttsModel)
+        self.ttsModel = self.selectedSpeech?.model ?? Self.normalizedTTSModel(ttsModel)
     }
 
     public init(from decoder: Decoder) throws {
@@ -386,6 +412,10 @@ public struct ProviderSettings: Codable, Equatable, Sendable {
         let selectedTranscription = try container.decodeIfPresent(TaskModelSelection.self, forKey: .selectedTranscription)
         let selectedSpeech = try container.decodeIfPresent(TaskModelSelection.self, forKey: .selectedSpeech)
         let configurationVersion = try container.decodeIfPresent(Int.self, forKey: .configurationVersion) ?? 0
+        let speechVoicesByProfileID = try container.decodeIfPresent(
+            [String: String].self,
+            forKey: .speechVoicesByProfileID
+        ) ?? [:]
         let voice = try container.decodeIfPresent(String.self, forKey: .voice) ?? Self.defaultVoice
         let instructions = try container.decodeIfPresent(String.self, forKey: .instructions) ?? Self.defaultInstructions
         let isAutoReadEnabled = try container.decodeIfPresent(Bool.self, forKey: .isAutoReadEnabled) ?? false
@@ -402,6 +432,7 @@ public struct ProviderSettings: Codable, Equatable, Sendable {
             selectedTranscription: selectedTranscription,
             selectedSpeech: selectedSpeech,
             configurationVersion: configurationVersion,
+            speechVoicesByProfileID: speechVoicesByProfileID,
             voice: voice,
             instructions: instructions,
             isAutoReadEnabled: isAutoReadEnabled,
@@ -428,25 +459,34 @@ public struct ProviderSettings: Codable, Equatable, Sendable {
         OpenAIModelOption(apiValue: "gpt-4o-transcribe", displayName: "GPT-4o Transcribe")
     ]
 
-    public static let supportedSpeechModels = [
-        OpenAIModelOption(apiValue: defaultTTSModel, displayName: "GPT-4o mini TTS")
-    ]
+    public static let openAISpeechCapabilities = ProviderSpeechCapabilities(
+        models: [
+            OpenAIModelOption(apiValue: defaultTTSModel, displayName: "GPT-4o mini TTS")
+        ],
+        voices: [
+            RealtimeVoiceOption(apiValue: "alloy", displayName: "Alloy"),
+            RealtimeVoiceOption(apiValue: "ash", displayName: "Ash"),
+            RealtimeVoiceOption(apiValue: "ballad", displayName: "Ballad"),
+            RealtimeVoiceOption(apiValue: "coral", displayName: "Coral"),
+            RealtimeVoiceOption(apiValue: "echo", displayName: "Echo"),
+            RealtimeVoiceOption(apiValue: "fable", displayName: "Fable"),
+            RealtimeVoiceOption(apiValue: "nova", displayName: "Nova"),
+            RealtimeVoiceOption(apiValue: "onyx", displayName: "Onyx"),
+            RealtimeVoiceOption(apiValue: "sage", displayName: "Sage"),
+            RealtimeVoiceOption(apiValue: "shimmer", displayName: "Shimmer"),
+            RealtimeVoiceOption(apiValue: "verse", displayName: "Verse"),
+            RealtimeVoiceOption(apiValue: "marin", displayName: "Marin"),
+            RealtimeVoiceOption(apiValue: "cedar", displayName: "Cedar")
+        ]
+    )
 
-    public static let supportedVoices = [
-        RealtimeVoiceOption(apiValue: "alloy", displayName: "Alloy"),
-        RealtimeVoiceOption(apiValue: "ash", displayName: "Ash"),
-        RealtimeVoiceOption(apiValue: "ballad", displayName: "Ballad"),
-        RealtimeVoiceOption(apiValue: "coral", displayName: "Coral"),
-        RealtimeVoiceOption(apiValue: "echo", displayName: "Echo"),
-        RealtimeVoiceOption(apiValue: "fable", displayName: "Fable"),
-        RealtimeVoiceOption(apiValue: "nova", displayName: "Nova"),
-        RealtimeVoiceOption(apiValue: "onyx", displayName: "Onyx"),
-        RealtimeVoiceOption(apiValue: "sage", displayName: "Sage"),
-        RealtimeVoiceOption(apiValue: "shimmer", displayName: "Shimmer"),
-        RealtimeVoiceOption(apiValue: "verse", displayName: "Verse"),
-        RealtimeVoiceOption(apiValue: "marin", displayName: "Marin"),
-        RealtimeVoiceOption(apiValue: "cedar", displayName: "Cedar")
-    ]
+    public static var supportedSpeechModels: [OpenAIModelOption] {
+        openAISpeechCapabilities.models
+    }
+
+    public static var supportedVoices: [RealtimeVoiceOption] {
+        openAISpeechCapabilities.voices
+    }
 
     public static let `default` = ProviderSettings()
 
@@ -474,6 +514,55 @@ public struct ProviderSettings: Codable, Equatable, Sendable {
         return Self.contextProviderID(for: selectedResponse, profile: profile(id: selectedResponse.profileID))
     }
 
+    public var activeSpeechVoice: String {
+        speechVoice(for: selectedSpeech?.profileID) ?? Self.normalizedVoice(voice)
+    }
+
+    public func speechCapabilities(for profileID: String?) -> ProviderSpeechCapabilities? {
+        guard let profileID,
+              let profile = profile(id: profileID)
+        else { return nil }
+        return Self.speechCapabilities(for: profile)
+    }
+
+    public static func speechCapabilities(for profile: ProviderProfile) -> ProviderSpeechCapabilities? {
+        switch profile.type {
+        case .openAI:
+            return openAISpeechCapabilities
+        case .hermes, .custom:
+            return nil
+        }
+    }
+
+    public func speechModelOptions(for profileID: String?) -> [OpenAIModelOption] {
+        speechCapabilities(for: profileID)?.models ?? []
+    }
+
+    public func speechVoiceOptions(for profileID: String?) -> [RealtimeVoiceOption] {
+        speechCapabilities(for: profileID)?.voices ?? []
+    }
+
+    public func defaultSpeechVoice(for profileID: String?) -> String? {
+        let options = speechVoiceOptions(for: profileID)
+        guard !options.isEmpty else { return nil }
+        if options.contains(where: { $0.apiValue == Self.defaultVoice }) {
+            return Self.defaultVoice
+        }
+        return options.first?.apiValue
+    }
+
+    public func speechVoice(for profileID: String?) -> String? {
+        let options = speechVoiceOptions(for: profileID)
+        guard !options.isEmpty else { return nil }
+
+        if let profileID,
+           let voice = speechVoicesByProfileID[profileID] {
+            return Self.normalizedVoice(voice, options: options)
+        }
+
+        return Self.normalizedVoice(voice, options: options)
+    }
+
     public func profile(id: String) -> ProviderProfile? {
         providerProfiles.first { $0.id == id }
     }
@@ -489,6 +578,13 @@ public struct ProviderSettings: Codable, Equatable, Sendable {
             profile.type.supportsResponses &&
                 (!withAPIKey || profile.hasAPIKey) &&
                 (profile.type != .hermes || profile.hasValidHermesBaseURL)
+        }
+    }
+
+    public func firstSpeechProfile(withAPIKey: Bool = false) -> ProviderProfile? {
+        providerProfiles.first { profile in
+            Self.speechCapabilities(for: profile)?.models.isEmpty == false &&
+                (!withAPIKey || profile.hasAPIKey)
         }
     }
 
@@ -514,9 +610,18 @@ public struct ProviderSettings: Codable, Equatable, Sendable {
         if !isExecutableSpeechSelection(selectedSpeech) {
             selectedSpeech = defaultSpeechSelection()
         }
+        speechVoicesByProfileID = Self.normalizedSpeechVoices(
+            speechVoicesByProfileID,
+            profiles: providerProfiles
+        )
         model = selectedResponse?.model ?? Self.defaultModel
         transcriptionModel = selectedTranscription?.model ?? Self.defaultTranscriptionModel
         ttsModel = selectedSpeech?.model ?? Self.defaultTTSModel
+        if let activeSpeechVoice = speechVoice(for: selectedSpeech?.profileID) {
+            voice = activeSpeechVoice
+        } else {
+            voice = Self.normalizedVoice(voice)
+        }
         hasAPIKey = selectedResponseProfile?.hasAPIKey == true ||
             selectedTranscriptionProfile?.hasAPIKey == true ||
             selectedSpeechProfile?.hasAPIKey == true
@@ -540,16 +645,62 @@ public struct ProviderSettings: Codable, Equatable, Sendable {
     }
 
     public static func normalizedTTSModel(_ model: String) -> String {
-        normalizedOptionValue(model, options: supportedSpeechModels, fallback: defaultTTSModel)
+        normalizedOptionValue(model, options: openAISpeechCapabilities.models, fallback: defaultTTSModel)
+    }
+
+    public static func normalizedTTSModel(_ model: String, profile: ProviderProfile) -> String {
+        guard let capabilities = speechCapabilities(for: profile),
+              let fallback = capabilities.models.first?.apiValue
+        else { return defaultTTSModel }
+        return normalizedOptionValue(model, options: capabilities.models, fallback: fallback)
     }
 
     public static func normalizedVoice(_ voice: String) -> String {
+        normalizedVoice(voice, options: openAISpeechCapabilities.voices)
+    }
+
+    public static func normalizedVoice(_ voice: String, options: [RealtimeVoiceOption]) -> String {
         let value = voice.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard supportedVoices.contains(where: { $0.apiValue == value }) else {
-            return defaultVoice
+        if let option = options.first(where: { $0.apiValue == value }) {
+            return option.apiValue
         }
 
-        return value
+        if options.contains(where: { $0.apiValue == defaultVoice }) {
+            return defaultVoice
+        }
+        return options.first?.apiValue ?? defaultVoice
+    }
+
+    public static func normalizedSpeechVoices(
+        _ voices: [String: String],
+        profiles: [ProviderProfile]
+    ) -> [String: String] {
+        let profilesByID = Dictionary(uniqueKeysWithValues: profiles.map { ($0.id, $0) })
+        return voices.reduce(into: [:]) { result, entry in
+            guard let profile = profilesByID[entry.key],
+                  let capabilities = speechCapabilities(for: profile),
+                  !capabilities.voices.isEmpty
+            else { return }
+            result[entry.key] = normalizedVoice(entry.value, options: capabilities.voices)
+        }
+    }
+
+    private static func activeSpeechVoice(
+        selectedSpeech: TaskModelSelection?,
+        speechVoicesByProfileID: [String: String],
+        fallbackVoice: String,
+        profiles: [ProviderProfile]
+    ) -> String? {
+        if let profileID = selectedSpeech?.profileID,
+           let profile = profiles.first(where: { $0.id == profileID }),
+           let capabilities = speechCapabilities(for: profile),
+           !capabilities.voices.isEmpty {
+            if let voice = speechVoicesByProfileID[profileID] {
+                return normalizedVoice(voice, options: capabilities.voices)
+            }
+            return normalizedVoice(fallbackVoice, options: capabilities.voices)
+        }
+        return nil
     }
 
     private static func normalizedOptionValue(
@@ -639,10 +790,11 @@ public struct ProviderSettings: Codable, Equatable, Sendable {
 
     private func isExecutableSpeechSelection(_ selection: TaskModelSelection?) -> Bool {
         guard let selection,
-              let profile = profile(id: selection.profileID)
+              let profile = profile(id: selection.profileID),
+              let capabilities = Self.speechCapabilities(for: profile)
         else { return false }
-        return profile.type.supportsSpeech && profile.hasAPIKey &&
-            Self.supportedSpeechModels.contains { $0.apiValue == selection.model }
+        return profile.hasAPIKey &&
+            capabilities.models.contains { $0.apiValue == selection.model }
     }
 
     private func defaultResponseSelection() -> TaskModelSelection? {
@@ -663,8 +815,10 @@ public struct ProviderSettings: Codable, Equatable, Sendable {
     }
 
     private func defaultSpeechSelection() -> TaskModelSelection? {
-        guard let profile = firstOpenAIProfile(withAPIKey: true) else { return nil }
-        return TaskModelSelection(profileID: profile.id, model: Self.defaultTTSModel)
+        guard let profile = firstSpeechProfile(withAPIKey: true),
+              let model = Self.speechCapabilities(for: profile)?.models.first?.apiValue
+        else { return nil }
+        return TaskModelSelection(profileID: profile.id, model: model)
     }
 
     private enum SelectionTask {
@@ -679,7 +833,7 @@ public struct ProviderSettings: Codable, Equatable, Sendable {
             case .transcription:
                 return profile.type.supportsTranscription
             case .speech:
-                return profile.type.supportsSpeech
+                return ProviderSettings.speechCapabilities(for: profile)?.models.isEmpty == false
             }
         }
 
@@ -705,11 +859,7 @@ public struct ProviderSettings: Codable, Equatable, Sendable {
                     fallback: ProviderSettings.defaultTranscriptionModel
                 )
             case .speech:
-                return ProviderSettings.normalizedOptionValue(
-                    model,
-                    options: ProviderSettings.supportedSpeechModels,
-                    fallback: ProviderSettings.defaultTTSModel
-                )
+                return ProviderSettings.normalizedTTSModel(model, profile: profile)
             }
         }
 

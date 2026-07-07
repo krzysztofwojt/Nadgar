@@ -48,6 +48,9 @@ final class SettingsViewModel: ObservableObject {
     @Published var selectedSpeech: TaskModelSelection? {
         didSet { refreshUnsavedSettingsChanges() }
     }
+    @Published var speechVoicesByProfileID: [String: String] {
+        didSet { refreshUnsavedSettingsChanges() }
+    }
     @Published var voice: String {
         didSet { refreshUnsavedSettingsChanges() }
     }
@@ -116,6 +119,7 @@ final class SettingsViewModel: ObservableObject {
         self.selectedResponse = loadedSettings.selectedResponse
         self.selectedTranscription = loadedSettings.selectedTranscription
         self.selectedSpeech = loadedSettings.selectedSpeech
+        self.speechVoicesByProfileID = loadedSettings.speechVoicesByProfileID
         self.voice = loadedSettings.voice
         self.isAutoReadEnabled = loadedSettings.isAutoReadEnabled
         self.shouldIgnoreSilentModeForAutoRead = loadedSettings.shouldIgnoreSilentModeForAutoRead
@@ -195,12 +199,40 @@ final class SettingsViewModel: ObservableObject {
         }
     }
 
+    var speechProviderOptions: [ProviderProfileOption] {
+        let currentSettings = storedSettingsWithCurrentKeyStatuses()
+        return currentSettings.providerProfiles.compactMap { profile in
+            guard profile.hasAPIKey,
+                  !currentSettings.speechModelOptions(for: profile.id).isEmpty
+            else { return nil }
+            return ProviderProfileOption(profileID: profile.id, displayName: profile.name)
+        }
+    }
+
     var selectedResponseModelOptions: [TaskModelOption] {
         responseModelOptions(for: selectedResponse?.profileID)
     }
 
     var selectedTranscriptionModelOptions: [TaskModelOption] {
         transcriptionModelOptions(for: selectedTranscription?.profileID)
+    }
+
+    var selectedSpeechModelOptions: [TaskModelOption] {
+        speechModelOptions(for: selectedSpeech?.profileID)
+    }
+
+    var selectedSpeechVoiceOptions: [RealtimeVoiceOption] {
+        speechVoiceOptions(for: selectedSpeech?.profileID)
+    }
+
+    var selectedSpeechVoice: String {
+        guard let profileID = selectedSpeech?.profileID else { return "" }
+        let options = speechVoiceOptions(for: profileID)
+        guard !options.isEmpty else { return "" }
+        return ProviderSettings.normalizedVoice(
+            speechVoicesByProfileID[profileID] ?? voice,
+            options: options
+        )
     }
 
     var responseModelOptions: [ProviderModelOption] {
@@ -248,7 +280,16 @@ final class SettingsViewModel: ObservableObject {
     }
 
     var speechModelOptions: [ProviderModelOption] {
-        modelOptions(using: ProviderSettings.supportedSpeechModels)
+        let currentSettings = storedSettingsWithCurrentKeyStatuses()
+        return currentSettings.providerProfiles.flatMap { profile -> [ProviderModelOption] in
+            guard profile.hasAPIKey else { return [] }
+            return currentSettings.speechModelOptions(for: profile.id).map { model in
+                ProviderModelOption(
+                    selection: TaskModelSelection(profileID: profile.id, model: model.apiValue),
+                    displayName: "\(profile.name) / \(model.displayName)"
+                )
+            }
+        }
     }
 
     func selectResponseProvider(profileID: String?) {
@@ -291,6 +332,47 @@ final class SettingsViewModel: ObservableObject {
               transcriptionModelOptions(for: profileID).contains(where: { $0.model == model })
         else { return }
         selectedTranscription = TaskModelSelection(profileID: profileID, model: model)
+    }
+
+    func selectSpeechProvider(profileID: String?) {
+        guard let profileID, !profileID.isEmpty else {
+            selectedSpeech = nil
+            return
+        }
+
+        guard selectedSpeech?.profileID != profileID else { return }
+        guard let model = speechModelOptions(for: profileID).first?.model else {
+            selectedSpeech = nil
+            return
+        }
+        selectedSpeech = TaskModelSelection(profileID: profileID, model: model)
+        let options = speechVoiceOptions(for: profileID)
+        if !options.isEmpty {
+            voice = ProviderSettings.normalizedVoice(
+                speechVoicesByProfileID[profileID] ?? ProviderSettings.defaultVoice,
+                options: options
+            )
+        }
+    }
+
+    func selectSpeechModel(_ model: String) {
+        guard let profileID = selectedSpeech?.profileID,
+              speechModelOptions(for: profileID).contains(where: { $0.model == model })
+        else { return }
+        selectedSpeech = TaskModelSelection(profileID: profileID, model: model)
+    }
+
+    func selectSpeechVoice(_ selectedVoice: String) {
+        guard let profileID = selectedSpeech?.profileID,
+              !selectedSpeechVoiceOptions.isEmpty
+        else { return }
+
+        let normalizedVoice = ProviderSettings.normalizedVoice(
+            selectedVoice,
+            options: selectedSpeechVoiceOptions
+        )
+        speechVoicesByProfileID[profileID] = normalizedVoice
+        voice = normalizedVoice
     }
 
     var canSaveSettings: Bool {
@@ -648,6 +730,26 @@ final class SettingsViewModel: ObservableObject {
         }
     }
 
+    private func speechModelOptions(for profileID: String?) -> [TaskModelOption] {
+        let currentSettings = storedSettingsWithCurrentKeyStatuses()
+        guard let profileID,
+              currentSettings.profile(id: profileID)?.hasAPIKey == true
+        else { return [] }
+
+        return currentSettings.speechModelOptions(for: profileID).map { model in
+            TaskModelOption(model: model.apiValue, displayName: model.displayName)
+        }
+    }
+
+    private func speechVoiceOptions(for profileID: String?) -> [RealtimeVoiceOption] {
+        let currentSettings = storedSettingsWithCurrentKeyStatuses()
+        guard let profileID,
+              currentSettings.profile(id: profileID)?.hasAPIKey == true
+        else { return [] }
+
+        return currentSettings.speechVoiceOptions(for: profileID)
+    }
+
     private func preferredResponseModel(for profileID: String) -> String? {
         guard let profile = storedSettingsWithCurrentKeyStatuses().profile(id: profileID) else { return nil }
         let options = responseModelOptions(for: profileID)
@@ -803,6 +905,7 @@ final class SettingsViewModel: ObservableObject {
             selectedResponse = settings.selectedResponse
             selectedTranscription = settings.selectedTranscription
             selectedSpeech = settings.selectedSpeech
+            speechVoicesByProfileID = settings.speechVoicesByProfileID
             voice = settings.voice
             isAutoReadEnabled = settings.isAutoReadEnabled
             shouldIgnoreSilentModeForAutoRead = settings.shouldIgnoreSilentModeForAutoRead
@@ -841,10 +944,16 @@ final class SettingsViewModel: ObservableObject {
         draft.selectedResponse = selectedResponse
         draft.selectedTranscription = selectedTranscription
         draft.selectedSpeech = selectedSpeech
+        draft.speechVoicesByProfileID = speechVoicesByProfileID
         draft.model = selectedResponse?.model ?? ProviderSettings.defaultModel
         draft.transcriptionModel = selectedTranscription?.model ?? ProviderSettings.defaultTranscriptionModel
         draft.ttsModel = selectedSpeech?.model ?? ProviderSettings.defaultTTSModel
-        draft.voice = voice
+        let selectedVoice = selectedSpeechVoice
+        if !selectedVoice.isEmpty {
+            draft.voice = selectedVoice
+        } else {
+            draft.voice = voice
+        }
         draft.instructions = instructions
         draft.isAutoReadEnabled = isAutoReadEnabled
         draft.shouldIgnoreSilentModeForAutoRead = shouldIgnoreSilentModeForAutoRead

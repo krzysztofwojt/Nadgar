@@ -107,26 +107,36 @@ private struct PersonalizationSection: View {
                 )
             }
 
-            Section("Personalization") {
+            Section("TTS") {
                 Toggle("Read responses aloud", isOn: autoReadBinding)
 
-                if viewModel.isAutoReadEnabled {
-                    modelPicker(
-                        title: "Speech",
-                        selection: speechSelectionBinding,
-                        options: viewModel.speechModelOptions
-                    )
+                providerPicker(
+                    title: "TTS provider",
+                    selection: speechProviderBinding,
+                    options: viewModel.speechProviderOptions
+                )
 
+                taskModelPicker(
+                    title: "Model",
+                    selection: speechModelBinding,
+                    options: viewModel.selectedSpeechModelOptions
+                )
+
+                if !viewModel.selectedSpeechVoiceOptions.isEmpty {
+                    voicePicker(
+                        title: "Voice",
+                        selection: speechVoiceBinding,
+                        options: viewModel.selectedSpeechVoiceOptions
+                    )
+                }
+
+                if viewModel.isAutoReadEnabled {
                     Toggle("Ignore Silent Mode", isOn: ignoreSilentModeBinding)
                         .transition(.opacity.combined(with: .move(edge: .top)))
                 }
+            }
 
-                Picker("Voice", selection: $viewModel.voice) {
-                    ForEach(ProviderSettings.supportedVoices) { voice in
-                        Text(voice.displayName).tag(voice.apiValue)
-                    }
-                }
-
+            Section("Personalization") {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Prompt")
                         .font(.subheadline)
@@ -195,10 +205,10 @@ private struct PersonalizationSection: View {
     }
 
     @ViewBuilder
-    private func modelPicker(
+    private func voicePicker(
         title: String,
-        selection: Binding<TaskModelSelection?>,
-        options: [ProviderModelOption]
+        selection: Binding<String>,
+        options: [RealtimeVoiceOption]
     ) -> some View {
         if options.isEmpty {
             LabeledContent(title, value: "Not configured")
@@ -206,7 +216,7 @@ private struct PersonalizationSection: View {
         } else {
             Picker(title, selection: selection) {
                 ForEach(options) { option in
-                    Text(option.displayName).tag(Optional(option.selection))
+                    Text(option.displayName).tag(option.apiValue)
                 }
             }
         }
@@ -244,11 +254,27 @@ private struct PersonalizationSection: View {
         }
     }
 
-    private var speechSelectionBinding: Binding<TaskModelSelection?> {
+    private var speechProviderBinding: Binding<String> {
         Binding {
-            viewModel.selectedSpeech
+            viewModel.selectedSpeech?.profileID ?? ""
         } set: { newValue in
-            viewModel.selectedSpeech = newValue
+            viewModel.selectSpeechProvider(profileID: newValue)
+        }
+    }
+
+    private var speechModelBinding: Binding<String> {
+        Binding {
+            viewModel.selectedSpeech?.model ?? ""
+        } set: { newValue in
+            viewModel.selectSpeechModel(newValue)
+        }
+    }
+
+    private var speechVoiceBinding: Binding<String> {
+        Binding {
+            viewModel.selectedSpeechVoice
+        } set: { newValue in
+            viewModel.selectSpeechVoice(newValue)
         }
     }
 

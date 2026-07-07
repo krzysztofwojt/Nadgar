@@ -527,7 +527,8 @@ final class WatchVoiceViewModel: ObservableObject {
             settings.shouldIgnoreSilentModeForAutoRead != updatedSettings.shouldIgnoreSilentModeForAutoRead ||
             settings.voice != updatedSettings.voice ||
             settings.ttsModel != updatedSettings.ttsModel ||
-            settings.selectedSpeech != updatedSettings.selectedSpeech
+            settings.selectedSpeech != updatedSettings.selectedSpeech ||
+            settings.speechVoicesByProfileID != updatedSettings.speechVoicesByProfileID
         let oldResponseContextID = responseContextProviderID(in: settings)
         let newResponseContextID = responseContextProviderID(in: updatedSettings)
 
@@ -1361,11 +1362,16 @@ final class WatchVoiceViewModel: ObservableObject {
         responseSettings.transcriptionModel = transcriptionSelection.model
         responseSettings.normalizeSelectionsAfterProfileChange()
         let speechSelection = responseSettings.selectedSpeech
+        responseSettings.ttsModel = speechSelection?.model ?? ProviderSettings.defaultTTSModel
+        if let speechProfileID = speechSelection?.profileID,
+           let speechVoice = responseSettings.speechVoice(for: speechProfileID) {
+            responseSettings.voice = speechVoice
+        }
         let speechProfile = speechSelection.flatMap { responseSettings.profile(id: $0.profileID) }
         let speechAPIKey: String?
         if responseSettings.isAutoReadEnabled,
            let speechProfile,
-           speechProfile.type.supportsSpeech {
+           ProviderSettings.speechCapabilities(for: speechProfile) != nil {
             speechAPIKey = normalizedAPIKey(for: speechProfile.id)
         } else {
             speechAPIKey = nil

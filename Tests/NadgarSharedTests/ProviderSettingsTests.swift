@@ -112,6 +112,32 @@ struct ProviderSettingsTests {
         ))
     }
 
+    @Test func legacySpeechVoiceFallsBackToGlobalVoiceWhenPerProfileVoicesAreMissing() throws {
+        let data = """
+        {
+          "providerProfiles": [
+            {
+              "id": "openai-1",
+              "type": "openAI",
+              "name": "OpenAI API",
+              "hasAPIKey": true
+            }
+          ],
+          "selectedSpeech": {
+            "profileID": "openai-1",
+            "model": "\(ProviderSettings.defaultTTSModel)"
+          },
+          "voice": "NOVA"
+        }
+        """.data(using: .utf8)!
+
+        let settings = try JSONDecoder().decode(ProviderSettings.self, from: data)
+
+        #expect(settings.speechVoicesByProfileID.isEmpty)
+        #expect(settings.voice == "nova")
+        #expect(settings.activeSpeechVoice == "nova")
+    }
+
     @Test func newSettingsCanPersistZeroProvidersWithoutRecreatingOpenAI() throws {
         let data = """
         {
@@ -194,6 +220,84 @@ struct ProviderSettingsTests {
         #expect(settings.selectedResponseContextProviderID == "hermes:hermes-1:gpt-oss")
     }
 
+    @Test func speechCapabilitiesAreProviderSpecific() throws {
+        let openAI = ProviderProfile(id: "openai-1", type: .openAI, hasAPIKey: true)
+        let hermes = ProviderProfile(
+            id: "hermes-1",
+            type: .hermes,
+            hasAPIKey: true,
+            hermesBaseURL: "https://hermes.example.com/v1",
+            hermesResponseModel: "hermes-agent"
+        )
+        let custom = ProviderProfile(id: "custom-1", type: .custom, hasAPIKey: false)
+        let settings = ProviderSettings(providerProfiles: [openAI, hermes, custom])
+        let openAICapabilities = try #require(settings.speechCapabilities(for: "openai-1"))
+
+        #expect(openAICapabilities.models.map(\.apiValue) == [ProviderSettings.defaultTTSModel])
+        #expect(openAICapabilities.voices.map(\.apiValue).contains("marin"))
+        #expect(settings.speechCapabilities(for: "hermes-1") == nil)
+        #expect(settings.speechCapabilities(for: "custom-1") == nil)
+        #expect(settings.speechModelOptions(for: "hermes-1").isEmpty)
+        #expect(settings.speechVoiceOptions(for: "hermes-1").isEmpty)
+    }
+
+    @Test func speechVoicesAreNormalizedPerOpenAIProfile() {
+        let openAI1 = ProviderProfile(id: "openai-1", type: .openAI, hasAPIKey: true)
+        let openAI2 = ProviderProfile(id: "openai-2", type: .openAI, hasAPIKey: false)
+        let hermes = ProviderProfile(
+            id: "hermes-1",
+            type: .hermes,
+            hasAPIKey: true,
+            hermesBaseURL: "https://hermes.example.com/v1",
+            hermesResponseModel: "hermes-agent"
+        )
+
+        let settings = ProviderSettings(
+            providerProfiles: [openAI1, openAI2, hermes],
+            selectedSpeech: TaskModelSelection(profileID: "openai-1", model: ProviderSettings.defaultTTSModel),
+            speechVoicesByProfileID: [
+                "openai-1": " FABLE ",
+                "openai-2": "CEDAR",
+                "hermes-1": "nova",
+                "missing": "onyx"
+            ],
+            voice: "nova"
+        )
+
+        #expect(settings.speechVoicesByProfileID == [
+            "openai-1": "fable",
+            "openai-2": "cedar"
+        ])
+        #expect(settings.voice == "fable")
+        #expect(settings.activeSpeechVoice == "fable")
+        #expect(settings.speechVoice(for: "openai-2") == Optional("cedar"))
+    }
+
+    @Test func speechVoicesArePrunedWhenProviderIsDeleted() {
+        let openAI1 = ProviderProfile(id: "openai-1", type: .openAI, hasAPIKey: true)
+        let openAI2 = ProviderProfile(id: "openai-2", type: .openAI, hasAPIKey: true)
+        var settings = ProviderSettings(
+            providerProfiles: [openAI1, openAI2],
+            selectedSpeech: TaskModelSelection(profileID: "openai-2", model: ProviderSettings.defaultTTSModel),
+            speechVoicesByProfileID: [
+                "openai-1": "alloy",
+                "openai-2": "cedar"
+            ],
+            voice: "nova"
+        )
+
+        settings.providerProfiles.removeAll { $0.id == "openai-2" }
+        settings.normalizeSelectionsAfterProfileChange()
+
+        #expect(settings.selectedSpeech == TaskModelSelection(
+            profileID: "openai-1",
+            model: ProviderSettings.defaultTTSModel
+        ))
+        #expect(settings.speechVoicesByProfileID == ["openai-1": "alloy"])
+        #expect(settings.voice == "alloy")
+        #expect(settings.activeSpeechVoice == "alloy")
+    }
+
     @Test func currentUnavailableHermesModelIsPreservedWhenItMatchesProfileSelection() {
         let hermes = ProviderProfile(
             id: "hermes-1",
@@ -226,7 +330,9 @@ struct ProviderSettingsTests {
             providerProfiles: [openAI, hermes],
             selectedResponse: TaskModelSelection(profileID: "hermes-1", model: "hermes-agent"),
             selectedTranscription: TaskModelSelection(profileID: "openai-1", model: ProviderSettings.defaultTranscriptionModel),
-            selectedSpeech: TaskModelSelection(profileID: "openai-1", model: ProviderSettings.defaultTTSModel)
+            selectedSpeech: TaskModelSelection(profileID: "openai-1", model: ProviderSettings.defaultTTSModel),
+            speechVoicesByProfileID: ["openai-1": "cedar"],
+            voice: "nova"
         )
 
         #expect(settings.selectedResponse == TaskModelSelection(profileID: "hermes-1", model: "hermes-agent"))
@@ -239,6 +345,8 @@ struct ProviderSettingsTests {
             model: ProviderSettings.defaultTTSModel
         ))
         #expect(settings.ttsModel == ProviderSettings.defaultTTSModel)
+        #expect(settings.voice == "cedar")
+        #expect(settings.activeSpeechVoice == "cedar")
     }
 
     @Test func supportedModelOptionsExposeDisplayNamesAndAPIValues() {
