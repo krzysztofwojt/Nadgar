@@ -608,7 +608,6 @@ final class WatchVoiceViewModel: ObservableObject {
     private func setSettingsHasAPIKey(_ hasAPIKey: Bool, for profileID: String) {
         var updatedSettings = settings
         updatedSettings.setAPIKeyStatus(hasAPIKey, for: profileID)
-        updatedSettings.normalizeSelectionsAfterProfileChange()
         settings = updatedSettings
         try? configurationStore.saveSettings(updatedSettings)
     }
@@ -1423,7 +1422,6 @@ final class WatchVoiceViewModel: ObservableObject {
         for profile in settings.providerProfiles {
             settings.setAPIKeyStatus(hasAPIKey(profileID: profile.id), for: profile.id)
         }
-        settings.normalizeSelectionsAfterProfileChange()
     }
 
     private static func loadAPIKeys(
