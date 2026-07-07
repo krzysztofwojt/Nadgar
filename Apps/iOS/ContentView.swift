@@ -78,52 +78,120 @@ private struct PersonalizationSection: View {
     @ObservedObject var viewModel: SettingsViewModel
 
     var body: some View {
-        Section("Personalization") {
-            modelPicker(
-                title: "Response model",
-                selection: responseSelectionBinding,
-                options: viewModel.responseModelOptions
-            )
+        Group {
+            Section("Transcription") {
+                providerPicker(
+                    title: "Transcription provider",
+                    selection: transcriptionProviderBinding,
+                    options: viewModel.transcriptionProviderOptions
+                )
 
-            modelPicker(
-                title: "Transcription",
-                selection: transcriptionSelectionBinding,
-                options: viewModel.transcriptionModelOptions
-            )
-
-            Toggle("Read responses aloud", isOn: autoReadBinding)
-
-            if viewModel.isAutoReadEnabled {
-                Toggle("Ignore Silent Mode", isOn: ignoreSilentModeBinding)
-                    .transition(.opacity.combined(with: .move(edge: .top)))
+                taskModelPicker(
+                    title: "Model",
+                    selection: transcriptionModelBinding,
+                    options: viewModel.selectedTranscriptionModelOptions
+                )
             }
 
-            Picker("Voice", selection: $viewModel.voice) {
-                ForEach(ProviderSettings.supportedVoices) { voice in
-                    Text(voice.displayName).tag(voice.apiValue)
+            Section("Responses") {
+                providerPicker(
+                    title: "Responses provider",
+                    selection: responseProviderBinding,
+                    options: viewModel.responseProviderOptions
+                )
+
+                taskModelPicker(
+                    title: "Model",
+                    selection: responseModelBinding,
+                    options: viewModel.selectedResponseModelOptions
+                )
+            }
+
+            Section("Personalization") {
+                Toggle("Read responses aloud", isOn: autoReadBinding)
+
+                if viewModel.isAutoReadEnabled {
+                    modelPicker(
+                        title: "Speech",
+                        selection: speechSelectionBinding,
+                        options: viewModel.speechModelOptions
+                    )
+
+                    Toggle("Ignore Silent Mode", isOn: ignoreSilentModeBinding)
+                        .transition(.opacity.combined(with: .move(edge: .top)))
                 }
-            }
 
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Prompt")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-
-                TextField("Prompt", text: $viewModel.instructions, axis: .vertical)
-                    .lineLimit(3...6)
-            }
-
-            if viewModel.hasUnsavedSettingsChanges {
-                Button {
-                    viewModel.saveSettings()
-                } label: {
-                    FullWidthButtonLabel("Save")
+                Picker("Voice", selection: $viewModel.voice) {
+                    ForEach(ProviderSettings.supportedVoices) { voice in
+                        Text(voice.displayName).tag(voice.apiValue)
+                    }
                 }
-                .disabled(!viewModel.canSaveSettings)
-                .buttonStyle(.borderless)
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Prompt")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+
+                    TextField("Prompt", text: $viewModel.instructions, axis: .vertical)
+                        .lineLimit(3...6)
+                }
+
+                if viewModel.hasUnsavedSettingsChanges {
+                    Button {
+                        viewModel.saveSettings()
+                    } label: {
+                        FullWidthButtonLabel("Save")
+                    }
+                    .disabled(!viewModel.canSaveSettings)
+                    .buttonStyle(.borderless)
+                }
             }
         }
         .animation(.default, value: viewModel.isAutoReadEnabled)
+    }
+
+    @ViewBuilder
+    private func providerPicker(
+        title: String,
+        selection: Binding<String>,
+        options: [ProviderProfileOption]
+    ) -> some View {
+        if options.isEmpty {
+            LabeledContent(title, value: "Not configured")
+                .foregroundStyle(.secondary)
+        } else {
+            Picker(title, selection: selection) {
+                if selection.wrappedValue.isEmpty {
+                    Text("Not selected").tag("")
+                }
+
+                ForEach(options) { option in
+                    Text(option.displayName).tag(option.profileID)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func taskModelPicker(
+        title: String,
+        selection: Binding<String>,
+        options: [TaskModelOption]
+    ) -> some View {
+        if options.isEmpty {
+            LabeledContent(title, value: "Not configured")
+                .foregroundStyle(.secondary)
+        } else {
+            Picker(title, selection: selection) {
+                if selection.wrappedValue.isEmpty {
+                    Text("Not selected").tag("")
+                }
+
+                ForEach(options) { option in
+                    Text(option.displayName).tag(option.model)
+                }
+            }
+        }
     }
 
     @ViewBuilder
@@ -144,19 +212,43 @@ private struct PersonalizationSection: View {
         }
     }
 
-    private var responseSelectionBinding: Binding<TaskModelSelection?> {
+    private var transcriptionProviderBinding: Binding<String> {
         Binding {
-            viewModel.selectedResponse
+            viewModel.selectedTranscription?.profileID ?? ""
         } set: { newValue in
-            viewModel.selectedResponse = newValue
+            viewModel.selectTranscriptionProvider(profileID: newValue)
         }
     }
 
-    private var transcriptionSelectionBinding: Binding<TaskModelSelection?> {
+    private var transcriptionModelBinding: Binding<String> {
         Binding {
-            viewModel.selectedTranscription
+            viewModel.selectedTranscription?.model ?? ""
         } set: { newValue in
-            viewModel.selectedTranscription = newValue
+            viewModel.selectTranscriptionModel(newValue)
+        }
+    }
+
+    private var responseProviderBinding: Binding<String> {
+        Binding {
+            viewModel.selectedResponse?.profileID ?? ""
+        } set: { newValue in
+            viewModel.selectResponseProvider(profileID: newValue)
+        }
+    }
+
+    private var responseModelBinding: Binding<String> {
+        Binding {
+            viewModel.selectedResponse?.model ?? ""
+        } set: { newValue in
+            viewModel.selectResponseModel(newValue)
+        }
+    }
+
+    private var speechSelectionBinding: Binding<TaskModelSelection?> {
+        Binding {
+            viewModel.selectedSpeech
+        } set: { newValue in
+            viewModel.selectedSpeech = newValue
         }
     }
 
@@ -235,6 +327,13 @@ private struct AddProviderTypeView: View {
                 .buttonStyle(.plain)
 
                 Button {
+                    select(.hermes)
+                } label: {
+                    ProviderTypeRow(title: "Hermes Agent", subtitle: "Pure Hermes API server")
+                }
+                .buttonStyle(.plain)
+
+                Button {
                     select(.custom)
                 } label: {
                     ProviderTypeRow(title: "Custom", subtitle: "Not configurable yet")
@@ -308,6 +407,8 @@ private struct ProviderDetailView: View {
             switch profile.type {
             case .openAI:
                 OpenAIProviderSettingsView(viewModel: viewModel, profileID: profileID)
+            case .hermes:
+                HermesProviderSettingsView(viewModel: viewModel, profileID: profileID)
             case .custom:
                 CustomProviderSettingsView(viewModel: viewModel, profileID: profileID)
             }
@@ -441,6 +542,164 @@ private struct OpenAIProviderSettingsView: View {
             viewModel.settings.profile(id: profileID)?.name ?? ""
         } set: { newValue in
             viewModel.updateProviderName(profileID: profileID, name: newValue)
+        }
+    }
+}
+
+private struct HermesProviderSettingsView: View {
+    @ObservedObject var viewModel: SettingsViewModel
+    var profileID: String
+    @State private var isAPIKeyVisible = false
+    @FocusState private var isAPIKeyFieldFocused: Bool
+
+    var body: some View {
+        Form {
+            Section("Name") {
+                TextField("Name", text: providerNameBinding)
+            }
+
+            Section("Hermes API") {
+                TextField("https://host/v1", text: baseURLBinding)
+                    .keyboardType(.URL)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+
+                Picker("Response model", selection: responseModelBinding) {
+                    ForEach(viewModel.hermesResponseModelOptions(for: profileID)) { option in
+                        Text(option.displayName).tag(option.modelID)
+                    }
+                }
+                .disabled(!viewModel.canSelectHermesResponseModel(for: profileID))
+
+                Button {
+                    Task {
+                        await viewModel.refreshHermesModels(for: profileID)
+                    }
+                } label: {
+                    FullWidthButtonLabel("Refresh Models")
+                }
+                .disabled(!viewModel.canRefreshHermesModels(for: profileID))
+                .buttonStyle(.borderless)
+            }
+
+            Section("Hermes API Key") {
+                apiKeyField
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+
+                if hasAPIKeyText {
+                    HStack {
+                        Button(role: .destructive) {
+                            isAPIKeyVisible = false
+                            isAPIKeyFieldFocused = false
+                            viewModel.clearAPIKeyButtonTapped(for: profileID)
+                        } label: {
+                            Text("Clear")
+                                .foregroundStyle(.red)
+                        }
+                        .disabled(!viewModel.canClearAPIKey(for: profileID))
+
+                        Spacer()
+
+                        Button(isAPIKeyVisible ? "Hide" : "Show") {
+                            isAPIKeyFieldFocused = false
+                            isAPIKeyVisible.toggle()
+                        }
+                    }
+                    .buttonStyle(.borderless)
+                } else {
+                    Button {
+                        isAPIKeyVisible = false
+                        isAPIKeyFieldFocused = false
+                        viewModel.updateAPIKeyDraft(UIPasteboard.general.string ?? "", for: profileID)
+                    } label: {
+                        FullWidthButtonLabel("Paste")
+                    }
+                    .buttonStyle(.borderless)
+                }
+
+                saveAPIKeyButton
+
+                if viewModel.isSavingAPIKey(for: profileID) {
+                    ProgressView("Validating...")
+                }
+
+                if let apiKeyValidationError = viewModel.apiKeyValidationError(for: profileID) {
+                    Text(apiKeyValidationError)
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                }
+            }
+        }
+        .navigationTitle(viewModel.settings.profile(id: profileID)?.name ?? "Hermes Agent")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private var apiKeyField: some View {
+        Group {
+            if isAPIKeyVisible {
+                TextField("Hermes API key", text: apiKeyDraftBinding)
+                    .focused($isAPIKeyFieldFocused)
+                    .textContentType(.password)
+            } else {
+                SecureField("Hermes API key", text: apiKeyDraftBinding)
+                    .focused($isAPIKeyFieldFocused)
+                    .textContentType(.password)
+            }
+        }
+        .frame(minHeight: 36)
+        .disabled(viewModel.isSavingAPIKey(for: profileID))
+    }
+
+    @ViewBuilder
+    private var saveAPIKeyButton: some View {
+        if viewModel.hasUnsavedAPIKeyChanges(for: profileID) {
+            Button {
+                isAPIKeyFieldFocused = false
+                Task {
+                    await viewModel.saveAPIKeyDraft(for: profileID)
+                }
+            } label: {
+                FullWidthButtonLabel("Save")
+            }
+            .disabled(!viewModel.canSaveAPIKey(for: profileID))
+            .buttonStyle(.borderless)
+        }
+    }
+
+    private var hasAPIKeyText: Bool {
+        viewModel.hasAPIKeyText(for: profileID)
+    }
+
+    private var apiKeyDraftBinding: Binding<String> {
+        Binding {
+            viewModel.apiKeyDraft(for: profileID)
+        } set: { newValue in
+            viewModel.updateAPIKeyDraft(newValue, for: profileID)
+        }
+    }
+
+    private var providerNameBinding: Binding<String> {
+        Binding {
+            viewModel.settings.profile(id: profileID)?.name ?? ""
+        } set: { newValue in
+            viewModel.updateProviderName(profileID: profileID, name: newValue)
+        }
+    }
+
+    private var baseURLBinding: Binding<String> {
+        Binding {
+            viewModel.settings.profile(id: profileID)?.hermesBaseURL ?? ""
+        } set: { newValue in
+            viewModel.updateHermesBaseURL(profileID: profileID, baseURL: newValue)
+        }
+    }
+
+    private var responseModelBinding: Binding<String> {
+        Binding {
+            viewModel.settings.profile(id: profileID)?.hermesResponseModel ?? ProviderProfile.defaultHermesResponseModel
+        } set: { newValue in
+            viewModel.updateHermesResponseModel(profileID: profileID, model: newValue)
         }
     }
 }

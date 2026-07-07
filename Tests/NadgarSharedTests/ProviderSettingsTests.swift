@@ -106,6 +106,10 @@ struct ProviderSettingsTests {
             profileID: ProviderProfile.legacyOpenAIProfileID,
             model: "gpt-4o-transcribe"
         ))
+        #expect(settings.selectedSpeech == TaskModelSelection(
+            profileID: ProviderProfile.legacyOpenAIProfileID,
+            model: ProviderSettings.defaultTTSModel
+        ))
     }
 
     @Test func newSettingsCanPersistZeroProvidersWithoutRecreatingOpenAI() throws {
@@ -125,7 +129,116 @@ struct ProviderSettingsTests {
         #expect(settings.providerProfiles.isEmpty)
         #expect(settings.selectedResponse == nil)
         #expect(settings.selectedTranscription == nil)
+        #expect(settings.selectedSpeech == nil)
         #expect(settings.configurationVersion == 3)
+    }
+
+    @Test func hermesProfileNormalizesURLModelAndDefaultName() throws {
+        let profile = ProviderProfile(
+            type: .hermes,
+            name: " ",
+            hermesBaseURL: " https://hermes.example.com/nadgar/ ",
+            hermesResponseModel: " Hermes-Agent ",
+            hermesResponseModels: [" Hermes-Agent ", "gpt-oss", "GPT-OSS", " "]
+        )
+
+        #expect(profile.name == "Hermes Agent")
+        #expect(profile.hermesBaseURL == "https://hermes.example.com/nadgar")
+        #expect(profile.hermesResponseModel == "hermes-agent")
+        #expect(profile.hermesResponseModels == ["hermes-agent", "gpt-oss"])
+        #expect(profile.hermesV1BaseURL?.absoluteString == "https://hermes.example.com/nadgar/v1")
+    }
+
+    @Test func decodedLegacyHermesProfileKeepsSelectedModelWithoutCachedModels() throws {
+        let data = """
+        {
+          "id": "hermes-1",
+          "type": "hermes",
+          "name": "Hermes API",
+          "hasAPIKey": true,
+          "hermesBaseURL": "https://hermes.example.com/v1",
+          "hermesResponseModel": "custom-hermes-model"
+        }
+        """.data(using: .utf8)!
+
+        let profile = try JSONDecoder().decode(ProviderProfile.self, from: data)
+
+        #expect(profile.hermesResponseModel == "custom-hermes-model")
+        #expect(profile.hermesResponseModels.isEmpty)
+    }
+
+    @Test func hermesBaseURLRequiresHTTPS() {
+        #expect(ProviderProfile.hermesV1BaseURL(from: "http://hermes.example.com/v1") == nil)
+        #expect(ProviderProfile.hermesV1BaseURL(from: "https://hermes.example.com/v1")?.absoluteString == "https://hermes.example.com/v1")
+    }
+
+    @Test func hermesCanBeSelectedForResponsesButNotTranscription() {
+        let hermes = ProviderProfile(
+            id: "hermes-1",
+            type: .hermes,
+            hasAPIKey: true,
+            hermesBaseURL: "https://hermes.example.com/v1",
+            hermesResponseModel: "hermes-agent",
+            hermesResponseModels: ["hermes-agent", "gpt-oss"]
+        )
+        let settings = ProviderSettings(
+            providerProfiles: [hermes],
+            selectedResponse: TaskModelSelection(profileID: "hermes-1", model: "gpt-oss"),
+            selectedTranscription: TaskModelSelection(profileID: "hermes-1", model: "hermes-agent"),
+            selectedSpeech: TaskModelSelection(profileID: "hermes-1", model: "hermes-agent")
+        )
+
+        #expect(settings.selectedResponse == TaskModelSelection(profileID: "hermes-1", model: "gpt-oss"))
+        #expect(settings.selectedTranscription == nil)
+        #expect(settings.selectedSpeech == nil)
+        #expect(settings.selectedResponseContextProviderID == "hermes:hermes-1:gpt-oss")
+    }
+
+    @Test func currentUnavailableHermesModelIsPreservedWhenItMatchesProfileSelection() {
+        let hermes = ProviderProfile(
+            id: "hermes-1",
+            type: .hermes,
+            hasAPIKey: true,
+            hermesBaseURL: "https://hermes.example.com/v1",
+            hermesResponseModel: "legacy-model",
+            hermesResponseModels: ["new-model"]
+        )
+        let settings = ProviderSettings(
+            providerProfiles: [hermes],
+            selectedResponse: TaskModelSelection(profileID: "hermes-1", model: "legacy-model")
+        )
+
+        #expect(settings.selectedResponse == TaskModelSelection(profileID: "hermes-1", model: "legacy-model"))
+    }
+
+    @Test func responseAndSpeechCanUseDifferentProviders() {
+        let openAI = ProviderProfile(id: "openai-1", type: .openAI, name: "OpenAI Speech", hasAPIKey: true)
+        let hermes = ProviderProfile(
+            id: "hermes-1",
+            type: .hermes,
+            name: "Hermes api",
+            hasAPIKey: true,
+            hermesBaseURL: "https://hermes.example.com/v1",
+            hermesResponseModel: "hermes-agent"
+        )
+
+        let settings = ProviderSettings(
+            providerProfiles: [openAI, hermes],
+            selectedResponse: TaskModelSelection(profileID: "hermes-1", model: "hermes-agent"),
+            selectedTranscription: TaskModelSelection(profileID: "openai-1", model: ProviderSettings.defaultTranscriptionModel),
+            selectedSpeech: TaskModelSelection(profileID: "openai-1", model: ProviderSettings.defaultTTSModel)
+        )
+
+        #expect(settings.selectedResponse == TaskModelSelection(profileID: "hermes-1", model: "hermes-agent"))
+        #expect(settings.selectedTranscription == TaskModelSelection(
+            profileID: "openai-1",
+            model: ProviderSettings.defaultTranscriptionModel
+        ))
+        #expect(settings.selectedSpeech == TaskModelSelection(
+            profileID: "openai-1",
+            model: ProviderSettings.defaultTTSModel
+        ))
+        #expect(settings.ttsModel == ProviderSettings.defaultTTSModel)
     }
 
     @Test func supportedModelOptionsExposeDisplayNamesAndAPIValues() {
@@ -133,6 +246,8 @@ struct ProviderSettingsTests {
         #expect(ProviderSettings.supportedAssistantModels.map(\.apiValue).contains("gpt-5.4-nano"))
         #expect(ProviderSettings.supportedTranscriptionModels.map(\.displayName).contains("GPT-4o mini Transcribe"))
         #expect(ProviderSettings.supportedTranscriptionModels.map(\.apiValue).contains("gpt-4o-mini-transcribe"))
+        #expect(ProviderSettings.supportedSpeechModels.map(\.displayName).contains("GPT-4o mini TTS"))
+        #expect(ProviderSettings.supportedSpeechModels.map(\.apiValue).contains(ProviderSettings.defaultTTSModel))
     }
 
     @Test func supportedVoicesExposeCapitalizedDisplayNamesAndLowercaseAPIValues() {

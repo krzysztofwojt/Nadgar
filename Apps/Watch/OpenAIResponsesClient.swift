@@ -435,6 +435,211 @@ struct OpenAIResponsesConversationProvider: AssistantConversationProvider {
     }
 }
 
+private struct HermesResponsesRequest: Encodable {
+    var model: String
+    var instructions: String?
+    var input: [OpenAIResponsesInputMessage]
+    var conversation: String?
+    var store: Bool
+    var stream: Bool
+}
+
+struct HermesResponsesClient: Sendable {
+    private static let logger = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "app.nadgar.Nadgar.watchkitapp",
+        category: "HermesResponsesClient"
+    )
+
+    private let session: URLSession
+
+    init(session: URLSession = .shared) {
+        self.session = session
+    }
+
+    func response(
+        apiKey: String,
+        profile: ProviderProfile,
+        settings: ProviderSettings,
+        input: [OpenAIResponsesInputMessage],
+        conversation: String?,
+        sessionKey: String,
+        store: Bool
+    ) async throws -> OpenAIResponsesResult {
+        guard let endpoint = profile.hermesV1BaseURL?.appendingPathComponent("responses") else {
+            throw HermesResponsesClientError.invalidBaseURL
+        }
+
+        var request = URLRequest(url: endpoint)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 120
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(sessionKey, forHTTPHeaderField: "X-Hermes-Session-Key")
+        request.httpBody = try JSONEncoder().encode(HermesResponsesRequest(
+            model: settings.model,
+            instructions: settings.instructions,
+            input: input,
+            conversation: conversation,
+            store: store,
+            stream: false
+        ))
+
+        Self.logger.info("hermes response request model=\(settings.model, privacy: .public) hasConversation=\((conversation != nil), privacy: .public) inputCount=\(input.count, privacy: .public)")
+        let (data, response) = try await session.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw WatchOpenAIClientError.invalidResponse
+        }
+
+        guard (200..<300).contains(httpResponse.statusCode) else {
+            throw WatchOpenAIClientError.openAIError(Self.errorMessage(from: data, statusCode: httpResponse.statusCode))
+        }
+
+        let decoded = try JSONDecoder().decode(OpenAIResponsesResponse.self, from: data)
+        var assistantResponse = decoded.assistantResponse
+        let trimmedText = assistantResponse.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedText.isEmpty else {
+            throw WatchOpenAIClientError.emptyResponse
+        }
+
+        if assistantResponse.citations.isEmpty {
+            assistantResponse.text = trimmedText
+        }
+
+        return OpenAIResponsesResult(response: assistantResponse, responseId: decoded.id)
+    }
+
+    private static func errorMessage(from data: Data, statusCode: Int) -> String {
+        if let decoded = try? JSONDecoder().decode(OpenAIErrorResponse.self, from: data) {
+            return decoded.error.message
+        }
+
+        let raw = String(data: data, encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return raw?.isEmpty == false ? raw! : "Hermes returned HTTP \(statusCode)."
+    }
+}
+
+enum HermesResponsesClientError: LocalizedError, Equatable {
+    case invalidBaseURL
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidBaseURL:
+            return "Hermes URL must be HTTPS and point to a pure Hermes API server."
+        }
+    }
+}
+
+struct HermesResponsesConversationProvider: AssistantConversationProvider {
+    var providerID: String
+    var profile: ProviderProfile
+    var client: HermesResponsesClient
+    var fallbackContextBuilder: AssistantFallbackContextBuilder
+
+    init(
+        profile: ProviderProfile,
+        providerID: String,
+        client: HermesResponsesClient,
+        fallbackContextBuilder: AssistantFallbackContextBuilder = AssistantFallbackContextBuilder()
+    ) {
+        self.profile = profile
+        self.providerID = providerID
+        self.client = client
+        self.fallbackContextBuilder = fallbackContextBuilder
+    }
+
+    func respond(apiKey: String, request: AssistantTurnRequest) async throws -> AssistantTurnResult {
+        var providerContext = request.providerContext ?? ProviderContextState(providerID: providerID)
+        let shouldBootstrap = providerContext.requiresLocalHistoryBootstrap ||
+            providerContext.lastRemoteTurnID?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false
+        let input = shouldBootstrap ? fallbackContextInput(for: request) : [
+            OpenAIResponsesInputMessage(message: request.userMessage)
+        ]
+        let conversationName = conversationName(for: request)
+        let result = try await client.response(
+            apiKey: apiKey,
+            profile: profile,
+            settings: request.settings,
+            input: input,
+            conversation: conversationName,
+            sessionKey: sessionKey(for: request),
+            store: true
+        )
+
+        providerContext.providerID = providerID
+        providerContext.contextID = conversationName
+        providerContext.lastRemoteTurnID = result.responseId
+        providerContext.clearLocalHistoryBootstrapRequirement()
+        return AssistantTurnResult(response: result.response, providerContext: providerContext)
+    }
+
+    func summarizeIfNeeded(
+        apiKey: String,
+        request: ConversationSummaryRequest
+    ) async throws -> ConversationSummaryResult? {
+        guard !request.messages.isEmpty else { return nil }
+
+        var input: [OpenAIResponsesInputMessage] = [
+            OpenAIResponsesInputMessage(
+                role: "system",
+                content: """
+                Summarize the earlier Nadgar conversation for future context. Keep stable facts, user preferences, unresolved requests, and important decisions. Be concise and do not add new information.
+                """
+            )
+        ]
+        if let currentSummary = request.currentSummary {
+            input.append(OpenAIResponsesInputMessage(
+                role: "system",
+                content: "Existing summary to update:\n\(currentSummary)"
+            ))
+        }
+        input.append(contentsOf: request.messages.map(OpenAIResponsesInputMessage.init(message:)))
+
+        let result = try await client.response(
+            apiKey: apiKey,
+            profile: profile,
+            settings: request.settings,
+            input: input,
+            conversation: nil,
+            sessionKey: "\(sessionKey(for: request)):summary",
+            store: false
+        )
+        return ConversationSummaryResult(
+            summary: result.text,
+            throughMessageID: request.throughMessageID,
+            providerContext: request.providerContext
+        )
+    }
+
+    private func fallbackContextInput(for request: AssistantTurnRequest) -> [OpenAIResponsesInputMessage] {
+        let fallbackContext = fallbackContextBuilder.build(for: request)
+        var input: [OpenAIResponsesInputMessage] = []
+
+        if let summary = fallbackContext.summary {
+            input.append(OpenAIResponsesInputMessage(
+                role: "system",
+                content: "Earlier conversation summary:\n\(summary)"
+            ))
+        }
+
+        input.append(contentsOf: fallbackContext.messages.map(OpenAIResponsesInputMessage.init(message:)))
+        input.append(OpenAIResponsesInputMessage(message: fallbackContext.userMessage))
+        return input
+    }
+
+    private func conversationName(for request: AssistantTurnRequest) -> String {
+        "nadgar:\(profile.id):\(request.conversationKey):\(request.contextEpochID.uuidString.lowercased())"
+    }
+
+    private func sessionKey(for request: AssistantTurnRequest) -> String {
+        "nadgar:\(profile.id):\(request.conversationKey)"
+    }
+
+    private func sessionKey(for request: ConversationSummaryRequest) -> String {
+        "nadgar:\(profile.id):\(request.conversationKey)"
+    }
+}
+
 private extension String {
     var nilIfEmpty: String? {
         isEmpty ? nil : self

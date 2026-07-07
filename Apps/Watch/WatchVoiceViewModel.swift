@@ -51,6 +51,7 @@ final class WatchVoiceViewModel: ObservableObject {
     private let recorder: WatchPTTRecorder
     private let transcriptionClient: OpenAITranscriptionClient
     private let responsesClient: OpenAIResponsesClient
+    private let hermesResponsesClient: HermesResponsesClient
     private let speechClient: OpenAISpeechClient
     private let speechAudioPipeline: WatchAudioPipeline
     private let assistantProvider: any AssistantConversationProvider
@@ -88,8 +89,12 @@ final class WatchVoiceViewModel: ObservableObject {
         var transcriptionModel: String
         var transcriptionAPIKey: String
         var responseProfileID: String
+        var responseProfile: ProviderProfile
         var responseModel: String
         var responseAPIKey: String
+        var speechProfileID: String?
+        var speechModel: String?
+        var speechAPIKey: String?
         var responseSettings: ProviderSettings
         var responseContextProviderID: String
     }
@@ -100,6 +105,7 @@ final class WatchVoiceViewModel: ObservableObject {
         recorder: WatchPTTRecorder? = nil,
         transcriptionClient: OpenAITranscriptionClient = OpenAITranscriptionClient(),
         responsesClient: OpenAIResponsesClient = OpenAIResponsesClient(),
+        hermesResponsesClient: HermesResponsesClient = HermesResponsesClient(),
         speechClient: OpenAISpeechClient = OpenAISpeechClient(),
         speechAudioPipeline: WatchAudioPipeline = WatchAudioPipeline(),
         assistantProvider: (any AssistantConversationProvider)? = nil,
@@ -129,6 +135,7 @@ final class WatchVoiceViewModel: ObservableObject {
         self.recorder = recorder ?? WatchPTTRecorder()
         self.transcriptionClient = transcriptionClient
         self.responsesClient = responsesClient
+        self.hermesResponsesClient = hermesResponsesClient
         self.speechClient = speechClient
         self.speechAudioPipeline = speechAudioPipeline
         self.assistantProvider = assistantProvider ?? OpenAIResponsesConversationProvider(client: responsesClient)
@@ -452,7 +459,7 @@ final class WatchVoiceViewModel: ObservableObject {
                 settings: turnConfiguration.responseSettings
             )
             let assistantMutationGuard = currentConversationMutationGuard()
-            let assistantResult = try await assistantResponse(apiKey: turnConfiguration.responseAPIKey, request: assistantRequest)
+            let assistantResult = try await assistantResponse(configuration: turnConfiguration, request: assistantRequest)
             guard activeTurnID == turnID,
                   isCurrentConversation(assistantMutationGuard)
             else { return }
@@ -460,17 +467,14 @@ final class WatchVoiceViewModel: ObservableObject {
             let assistantMessage = updateAssistantPlaceholder(id: assistantPlaceholderID, response: assistantResult.response)
             persistAssistantMessage(assistantMessage, providerContext: assistantResult.providerContext)
             startAssistantSpeechPlaybackIfNeeded(
-                apiKey: turnConfiguration.responseAPIKey,
+                apiKey: turnConfiguration.speechAPIKey,
                 settings: turnConfiguration.responseSettings
             )
             enqueueAssistantSpeechText(assistantResult.response.text)
             finishAssistantSpeechPlaybackInput()
             pttState = .ready
             errorMessage = nil
-            await updateSummaryIfNeeded(
-                apiKey: turnConfiguration.responseAPIKey,
-                settings: turnConfiguration.responseSettings
-            )
+            await updateSummaryIfNeeded(configuration: turnConfiguration)
             Self.logger.info("ptt assistant response appended characters=\(assistantResult.response.text.count, privacy: .public) citations=\(assistantResult.response.citations.count, privacy: .public)")
         } catch {
             guard activeTurnID == turnID else { return }
@@ -522,9 +526,10 @@ final class WatchVoiceViewModel: ObservableObject {
         let shouldStopSpeechPlayback = settings.isAutoReadEnabled != updatedSettings.isAutoReadEnabled ||
             settings.shouldIgnoreSilentModeForAutoRead != updatedSettings.shouldIgnoreSilentModeForAutoRead ||
             settings.voice != updatedSettings.voice ||
-            settings.ttsModel != updatedSettings.ttsModel
-        let oldResponseContextID = settings.selectedResponse.map(ProviderSettings.contextProviderID(for:))
-        let newResponseContextID = updatedSettings.selectedResponse.map(ProviderSettings.contextProviderID(for:))
+            settings.ttsModel != updatedSettings.ttsModel ||
+            settings.selectedSpeech != updatedSettings.selectedSpeech
+        let oldResponseContextID = responseContextProviderID(in: settings)
+        let newResponseContextID = responseContextProviderID(in: updatedSettings)
 
         do {
             try configurationStore.saveSettings(updatedSettings)
@@ -674,7 +679,10 @@ final class WatchVoiceViewModel: ObservableObject {
         }
     }
 
-    private func assistantResponse(apiKey: String, request: AssistantTurnRequest) async throws -> AssistantTurnResult {
+    private func assistantResponse(
+        configuration: WatchTurnConfiguration,
+        request: AssistantTurnRequest
+    ) async throws -> AssistantTurnResult {
         if openAITestMode.isEnabled {
             await openAITestMode.simulateResponseDelay()
             let turnNumber = conversation.messages.filter { $0.role == .user && !$0.isPlaceholder }.count
@@ -688,7 +696,19 @@ final class WatchVoiceViewModel: ObservableObject {
             )
         }
 
-        return try await assistantProvider.respond(apiKey: apiKey, request: request)
+        switch configuration.responseProfile.type {
+        case .openAI:
+            return try await assistantProvider.respond(apiKey: configuration.responseAPIKey, request: request)
+        case .hermes:
+            let provider = HermesResponsesConversationProvider(
+                profile: configuration.responseProfile,
+                providerID: configuration.responseContextProviderID,
+                client: hermesResponsesClient
+            )
+            return try await provider.respond(apiKey: configuration.responseAPIKey, request: request)
+        case .custom:
+            throw AssistantProviderError.notConfigured
+        }
     }
 
     private func assistantResponse(apiKey: String, messages: [ChatMessage]) async throws -> OpenAIAssistantResponse {
@@ -782,7 +802,10 @@ final class WatchVoiceViewModel: ObservableObject {
         return finalResponse
     }
 
-    private func startAssistantSpeechPlaybackIfNeeded(apiKey: String, settings: ProviderSettings) {
+    private func startAssistantSpeechPlaybackIfNeeded(
+        apiKey: String?,
+        settings: ProviderSettings
+    ) {
         stopAssistantSpeechPlayback()
         guard settings.isAutoReadEnabled else {
             Self.logger.info("ptt speech playback skipped reason=auto_read_disabled")
@@ -790,6 +813,10 @@ final class WatchVoiceViewModel: ObservableObject {
         }
         guard !openAITestMode.isEnabled else {
             Self.logger.info("ptt speech playback skipped reason=openai_test_mode")
+            return
+        }
+        guard let apiKey else {
+            Self.logger.info("ptt speech playback skipped reason=speech_provider_not_configured")
             return
         }
 
@@ -1173,7 +1200,7 @@ final class WatchVoiceViewModel: ObservableObject {
         refreshTimelineItems()
     }
 
-    private func updateSummaryIfNeeded(apiKey: String, settings: ProviderSettings) async {
+    private func updateSummaryIfNeeded(configuration: WatchTurnConfiguration) async {
         let currentEpochMessages = conversation.currentEpochMessages
         guard currentEpochMessages.count > StandalonePTTDefaults.rawRecoveryMessagesLimit else { return }
 
@@ -1187,15 +1214,32 @@ final class WatchVoiceViewModel: ObservableObject {
             currentSummary: conversation.humanSummaryForCurrentEpoch,
             messages: messagesToSummarize,
             throughMessageID: throughMessageId,
-            settings: settings
+            settings: configuration.responseSettings
         )
         let mutationGuard = currentConversationMutationGuard()
 
         do {
-            guard let result = try await assistantProvider.summarizeIfNeeded(
-                apiKey: apiKey,
-                request: summaryRequest
-            ) else { return }
+            let result: ConversationSummaryResult?
+            switch configuration.responseProfile.type {
+            case .openAI:
+                result = try await assistantProvider.summarizeIfNeeded(
+                    apiKey: configuration.responseAPIKey,
+                    request: summaryRequest
+                )
+            case .hermes:
+                let provider = HermesResponsesConversationProvider(
+                    profile: configuration.responseProfile,
+                    providerID: configuration.responseContextProviderID,
+                    client: hermesResponsesClient
+                )
+                result = try await provider.summarizeIfNeeded(
+                    apiKey: configuration.responseAPIKey,
+                    request: summaryRequest
+                )
+            case .custom:
+                result = nil
+            }
+            guard let result else { return }
             guard isCurrentConversation(mutationGuard) else { return }
 
             let hasTransientPlaceholders = messages.contains { $0.isPlaceholder }
@@ -1303,7 +1347,8 @@ final class WatchVoiceViewModel: ObservableObject {
               transcriptionProfile.type == .openAI,
               let responseSelection = settings.selectedResponse,
               let responseProfile = settings.profile(id: responseSelection.profileID),
-              responseProfile.type == .openAI,
+              responseProfile.type.supportsResponses,
+              responseProfile.type != .hermes || responseProfile.hasValidHermesBaseURL,
               let transcriptionAPIKey = normalizedAPIKey(for: transcriptionProfile.id),
               let responseAPIKey = normalizedAPIKey(for: responseProfile.id)
         else {
@@ -1315,16 +1360,38 @@ final class WatchVoiceViewModel: ObservableObject {
         responseSettings.model = responseSelection.model
         responseSettings.transcriptionModel = transcriptionSelection.model
         responseSettings.normalizeSelectionsAfterProfileChange()
+        let speechSelection = responseSettings.selectedSpeech
+        let speechProfile = speechSelection.flatMap { responseSettings.profile(id: $0.profileID) }
+        let speechAPIKey: String?
+        if responseSettings.isAutoReadEnabled,
+           let speechProfile,
+           speechProfile.type.supportsSpeech {
+            speechAPIKey = normalizedAPIKey(for: speechProfile.id)
+        } else {
+            speechAPIKey = nil
+        }
 
         return WatchTurnConfiguration(
             transcriptionProfileID: transcriptionProfile.id,
             transcriptionModel: transcriptionSelection.model,
             transcriptionAPIKey: transcriptionAPIKey,
             responseProfileID: responseProfile.id,
+            responseProfile: responseProfile,
             responseModel: responseSelection.model,
             responseAPIKey: responseAPIKey,
+            speechProfileID: speechProfile?.id,
+            speechModel: speechSelection?.model,
+            speechAPIKey: speechAPIKey,
             responseSettings: responseSettings,
-            responseContextProviderID: ProviderSettings.contextProviderID(for: responseSelection)
+            responseContextProviderID: ProviderSettings.contextProviderID(for: responseSelection, profile: responseProfile)
+        )
+    }
+
+    private func responseContextProviderID(in settings: ProviderSettings) -> String? {
+        guard let selectedResponse = settings.selectedResponse else { return nil }
+        return ProviderSettings.contextProviderID(
+            for: selectedResponse,
+            profile: settings.profile(id: selectedResponse.profileID)
         )
     }
 
@@ -1356,13 +1423,13 @@ final class WatchVoiceViewModel: ObservableObject {
         guard !openAITestMode.isEnabled else {
             return Dictionary(
                 uniqueKeysWithValues: profiles
-                    .filter { $0.type == .openAI }
+                    .filter { $0.type.supportsAPIKey }
                     .map { ($0.id, openAITestMode.apiKeyOverride ?? "__nadgar_mock_openai__") }
             )
         }
 
         var apiKeys: [String: String] = [:]
-        for profile in profiles where profile.type == .openAI {
+        for profile in profiles where profile.type.supportsAPIKey {
             guard let apiKey = try? configurationStore.loadAPIKey(for: profile.id)?
                 .trimmingCharacters(in: .whitespacesAndNewlines),
                 !apiKey.isEmpty

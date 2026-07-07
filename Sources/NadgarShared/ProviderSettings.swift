@@ -26,14 +26,53 @@ public struct OpenAIModelOption: Equatable, Hashable, Identifiable, Sendable {
 
 public enum ProviderType: String, Codable, CaseIterable, Equatable, Hashable, Sendable {
     case openAI = "openAI"
+    case hermes
     case custom
 
     public var displayName: String {
         switch self {
         case .openAI:
             return "OpenAI API"
+        case .hermes:
+            return "Hermes Agent"
         case .custom:
             return "Custom"
+        }
+    }
+
+    public var supportsAPIKey: Bool {
+        switch self {
+        case .openAI, .hermes:
+            return true
+        case .custom:
+            return false
+        }
+    }
+
+    public var supportsResponses: Bool {
+        switch self {
+        case .openAI, .hermes:
+            return true
+        case .custom:
+            return false
+        }
+    }
+
+    public var supportsTranscription: Bool {
+        switch self {
+        case .openAI:
+            return true
+        case .hermes, .custom:
+            return false
+        }
+    }
+
+    public var supportsSpeech: Bool {
+        switch self {
+        case .openAI:
+            return true
+        case .hermes, .custom:
+            return false
         }
     }
 }
@@ -41,26 +80,37 @@ public enum ProviderType: String, Codable, CaseIterable, Equatable, Hashable, Se
 public struct ProviderProfile: Codable, Equatable, Hashable, Identifiable, Sendable {
     public static let legacyOpenAIProfileID = "openai-default"
     public static let defaultOpenAIName = "OpenAI API"
+    public static let defaultHermesName = "Hermes Agent"
     public static let defaultCustomName = "Custom"
+    public static let defaultHermesResponseModel = "hermes-agent"
 
     public var id: String
     public var type: ProviderType
     public var name: String
     public var createdAt: Date
     public var hasAPIKey: Bool
+    public var hermesBaseURL: String
+    public var hermesResponseModel: String
+    public var hermesResponseModels: [String]
 
     public init(
         id: String = UUID().uuidString,
         type: ProviderType,
         name: String? = nil,
         createdAt: Date = Date(),
-        hasAPIKey: Bool = false
+        hasAPIKey: Bool = false,
+        hermesBaseURL: String = "",
+        hermesResponseModel: String = Self.defaultHermesResponseModel,
+        hermesResponseModels: [String] = []
     ) {
         self.id = Self.normalizedID(id)
         self.type = type
         self.name = Self.normalizedName(name, type: type)
         self.createdAt = createdAt
         self.hasAPIKey = hasAPIKey
+        self.hermesBaseURL = Self.normalizedHermesBaseURL(hermesBaseURL)
+        self.hermesResponseModel = Self.normalizedHermesResponseModel(hermesResponseModel)
+        self.hermesResponseModels = Self.normalizedHermesResponseModels(hermesResponseModels)
     }
 
     public static func legacyOpenAIProfile(hasAPIKey: Bool = false) -> ProviderProfile {
@@ -77,6 +127,26 @@ public struct ProviderProfile: Codable, Equatable, Hashable, Identifiable, Senda
         self.name = Self.normalizedName(name, type: type)
     }
 
+    public mutating func setHermesBaseURL(_ baseURL: String) {
+        self.hermesBaseURL = Self.normalizedHermesBaseURL(baseURL)
+    }
+
+    public mutating func setHermesResponseModel(_ model: String) {
+        self.hermesResponseModel = Self.normalizedHermesResponseModel(model)
+    }
+
+    public mutating func setHermesResponseModels(_ models: [String]) {
+        self.hermesResponseModels = Self.normalizedHermesResponseModels(models)
+    }
+
+    public var hermesV1BaseURL: URL? {
+        Self.hermesV1BaseURL(from: hermesBaseURL)
+    }
+
+    public var hasValidHermesBaseURL: Bool {
+        hermesV1BaseURL != nil
+    }
+
     private static func normalizedID(_ id: String) -> String {
         let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? UUID().uuidString : trimmed
@@ -88,7 +158,87 @@ public struct ProviderProfile: Codable, Equatable, Hashable, Identifiable, Senda
             return trimmed
         }
 
-        return type == .openAI ? defaultOpenAIName : defaultCustomName
+        switch type {
+        case .openAI:
+            return defaultOpenAIName
+        case .hermes:
+            return defaultHermesName
+        case .custom:
+            return defaultCustomName
+        }
+    }
+
+    public static func normalizedHermesBaseURL(_ baseURL: String) -> String {
+        baseURL
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+    }
+
+    public static func normalizedHermesResponseModel(_ model: String) -> String {
+        let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? defaultHermesResponseModel : trimmed.lowercased()
+    }
+
+    public static func normalizedHermesResponseModels(_ models: [String]) -> [String] {
+        var seen = Set<String>()
+        return models.compactMap { model in
+            let normalized = model.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard !normalized.isEmpty, !seen.contains(normalized) else { return nil }
+            seen.insert(normalized)
+            return normalized
+        }
+    }
+
+    public static func hermesV1BaseURL(from baseURL: String) -> URL? {
+        let normalized = normalizedHermesBaseURL(baseURL)
+        guard !normalized.isEmpty,
+              var components = URLComponents(string: normalized),
+              components.scheme?.lowercased() == "https",
+              components.host?.isEmpty == false
+        else {
+            return nil
+        }
+
+        components.query = nil
+        components.fragment = nil
+
+        let path = components.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        if path.isEmpty {
+            components.path = "/v1"
+        } else if path.split(separator: "/").last != "v1" {
+            components.path = "/" + path + "/v1"
+        } else {
+            components.path = "/" + path
+        }
+
+        return components.url
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case type
+        case name
+        case createdAt
+        case hasAPIKey
+        case hermesBaseURL
+        case hermesResponseModel
+        case hermesResponseModels
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let type = try container.decode(ProviderType.self, forKey: .type)
+        self.init(
+            id: try container.decodeIfPresent(String.self, forKey: .id) ?? UUID().uuidString,
+            type: type,
+            name: try container.decodeIfPresent(String.self, forKey: .name),
+            createdAt: try container.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date(),
+            hasAPIKey: try container.decodeIfPresent(Bool.self, forKey: .hasAPIKey) ?? false,
+            hermesBaseURL: try container.decodeIfPresent(String.self, forKey: .hermesBaseURL) ?? "",
+            hermesResponseModel: try container.decodeIfPresent(String.self, forKey: .hermesResponseModel) ??
+                Self.defaultHermesResponseModel,
+            hermesResponseModels: try container.decodeIfPresent([String].self, forKey: .hermesResponseModels) ?? []
+        )
     }
 }
 
@@ -97,12 +247,46 @@ public struct ProviderProfileSummary: Codable, Equatable, Hashable, Identifiable
     public var type: ProviderType
     public var name: String
     public var hasAPIKey: Bool
+    public var hermesBaseURL: String
+    public var hermesResponseModel: String
+    public var hermesResponseModels: [String]
 
     public init(profile: ProviderProfile) {
         self.id = profile.id
         self.type = profile.type
         self.name = profile.name
         self.hasAPIKey = profile.hasAPIKey
+        self.hermesBaseURL = profile.hermesBaseURL
+        self.hermesResponseModel = profile.hermesResponseModel
+        self.hermesResponseModels = profile.hermesResponseModels
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case type
+        case name
+        case hasAPIKey
+        case hermesBaseURL
+        case hermesResponseModel
+        case hermesResponseModels
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try container.decode(String.self, forKey: .id)
+        self.type = try container.decode(ProviderType.self, forKey: .type)
+        self.name = try container.decode(String.self, forKey: .name)
+        self.hasAPIKey = try container.decodeIfPresent(Bool.self, forKey: .hasAPIKey) ?? false
+        self.hermesBaseURL = ProviderProfile.normalizedHermesBaseURL(
+            try container.decodeIfPresent(String.self, forKey: .hermesBaseURL) ?? ""
+        )
+        self.hermesResponseModel = ProviderProfile.normalizedHermesResponseModel(
+            try container.decodeIfPresent(String.self, forKey: .hermesResponseModel) ??
+                ProviderProfile.defaultHermesResponseModel
+        )
+        self.hermesResponseModels = ProviderProfile.normalizedHermesResponseModels(
+            try container.decodeIfPresent([String].self, forKey: .hermesResponseModels) ?? []
+        )
     }
 }
 
@@ -124,6 +308,7 @@ public struct ProviderSettings: Codable, Equatable, Sendable {
     public var providerProfiles: [ProviderProfile]
     public var selectedResponse: TaskModelSelection?
     public var selectedTranscription: TaskModelSelection?
+    public var selectedSpeech: TaskModelSelection?
     public var configurationVersion: Int
     public var voice: String
     public var instructions: String
@@ -139,6 +324,7 @@ public struct ProviderSettings: Codable, Equatable, Sendable {
         providerProfiles: [ProviderProfile]? = nil,
         selectedResponse: TaskModelSelection? = nil,
         selectedTranscription: TaskModelSelection? = nil,
+        selectedSpeech: TaskModelSelection? = nil,
         configurationVersion: Int = 0,
         voice: String = Self.defaultVoice,
         instructions: String = Self.defaultInstructions,
@@ -154,7 +340,8 @@ public struct ProviderSettings: Codable, Equatable, Sendable {
         let hasAnySelectedKey = Self.hasAnySelectedKey(
             profiles: normalizedProfiles,
             response: selectedResponse,
-            transcription: selectedTranscription
+            transcription: selectedTranscription,
+            speech: selectedSpeech
         )
 
         self.hasAPIKey = hasAnySelectedKey || hasAPIKey
@@ -165,13 +352,19 @@ public struct ProviderSettings: Codable, Equatable, Sendable {
             selectedResponse,
             fallbackModel: normalizedModel,
             profiles: normalizedProfiles,
-            options: Self.supportedAssistantModels
+            task: .response
         )
         self.selectedTranscription = Self.normalizedSelection(
             selectedTranscription,
             fallbackModel: normalizedTranscriptionModel,
             profiles: normalizedProfiles,
-            options: Self.supportedTranscriptionModels
+            task: .transcription
+        )
+        self.selectedSpeech = Self.normalizedSelection(
+            selectedSpeech,
+            fallbackModel: Self.normalizedTTSModel(ttsModel),
+            profiles: normalizedProfiles,
+            task: .speech
         )
         self.configurationVersion = max(0, configurationVersion)
         self.voice = Self.normalizedVoice(voice)
@@ -191,6 +384,7 @@ public struct ProviderSettings: Codable, Equatable, Sendable {
         let providerProfiles = try container.decodeIfPresent([ProviderProfile].self, forKey: .providerProfiles)
         let selectedResponse = try container.decodeIfPresent(TaskModelSelection.self, forKey: .selectedResponse)
         let selectedTranscription = try container.decodeIfPresent(TaskModelSelection.self, forKey: .selectedTranscription)
+        let selectedSpeech = try container.decodeIfPresent(TaskModelSelection.self, forKey: .selectedSpeech)
         let configurationVersion = try container.decodeIfPresent(Int.self, forKey: .configurationVersion) ?? 0
         let voice = try container.decodeIfPresent(String.self, forKey: .voice) ?? Self.defaultVoice
         let instructions = try container.decodeIfPresent(String.self, forKey: .instructions) ?? Self.defaultInstructions
@@ -206,6 +400,7 @@ public struct ProviderSettings: Codable, Equatable, Sendable {
             providerProfiles: providerProfiles,
             selectedResponse: selectedResponse,
             selectedTranscription: selectedTranscription,
+            selectedSpeech: selectedSpeech,
             configurationVersion: configurationVersion,
             voice: voice,
             instructions: instructions,
@@ -231,6 +426,10 @@ public struct ProviderSettings: Codable, Equatable, Sendable {
     public static let supportedTranscriptionModels = [
         OpenAIModelOption(apiValue: "gpt-4o-mini-transcribe", displayName: "GPT-4o mini Transcribe"),
         OpenAIModelOption(apiValue: "gpt-4o-transcribe", displayName: "GPT-4o Transcribe")
+    ]
+
+    public static let supportedSpeechModels = [
+        OpenAIModelOption(apiValue: defaultTTSModel, displayName: "GPT-4o mini TTS")
     ]
 
     public static let supportedVoices = [
@@ -265,9 +464,14 @@ public struct ProviderSettings: Codable, Equatable, Sendable {
         return profile(id: selectedTranscription.profileID)
     }
 
+    public var selectedSpeechProfile: ProviderProfile? {
+        guard let selectedSpeech else { return nil }
+        return profile(id: selectedSpeech.profileID)
+    }
+
     public var selectedResponseContextProviderID: String {
         guard let selectedResponse else { return AssistantProviderIDs.openAI }
-        return Self.contextProviderID(for: selectedResponse)
+        return Self.contextProviderID(for: selectedResponse, profile: profile(id: selectedResponse.profileID))
     }
 
     public func profile(id: String) -> ProviderProfile? {
@@ -280,6 +484,14 @@ public struct ProviderSettings: Codable, Equatable, Sendable {
         }
     }
 
+    public func firstResponseProfile(withAPIKey: Bool = false) -> ProviderProfile? {
+        providerProfiles.first { profile in
+            profile.type.supportsResponses &&
+                (!withAPIKey || profile.hasAPIKey) &&
+                (profile.type != .hermes || profile.hasValidHermesBaseURL)
+        }
+    }
+
     public mutating func bumpConfigurationVersion() {
         configurationVersion += 1
     }
@@ -287,7 +499,9 @@ public struct ProviderSettings: Codable, Equatable, Sendable {
     public mutating func setAPIKeyStatus(_ hasAPIKey: Bool, for profileID: String) {
         guard let index = providerProfiles.firstIndex(where: { $0.id == profileID }) else { return }
         providerProfiles[index].hasAPIKey = hasAPIKey
-        self.hasAPIKey = selectedResponseProfile?.hasAPIKey == true || selectedTranscriptionProfile?.hasAPIKey == true
+        self.hasAPIKey = selectedResponseProfile?.hasAPIKey == true ||
+            selectedTranscriptionProfile?.hasAPIKey == true ||
+            selectedSpeechProfile?.hasAPIKey == true
     }
 
     public mutating func normalizeSelectionsAfterProfileChange() {
@@ -297,13 +511,24 @@ public struct ProviderSettings: Codable, Equatable, Sendable {
         if !isExecutableTranscriptionSelection(selectedTranscription) {
             selectedTranscription = defaultTranscriptionSelection()
         }
+        if !isExecutableSpeechSelection(selectedSpeech) {
+            selectedSpeech = defaultSpeechSelection()
+        }
         model = selectedResponse?.model ?? Self.defaultModel
         transcriptionModel = selectedTranscription?.model ?? Self.defaultTranscriptionModel
-        hasAPIKey = selectedResponseProfile?.hasAPIKey == true || selectedTranscriptionProfile?.hasAPIKey == true
+        ttsModel = selectedSpeech?.model ?? Self.defaultTTSModel
+        hasAPIKey = selectedResponseProfile?.hasAPIKey == true ||
+            selectedTranscriptionProfile?.hasAPIKey == true ||
+            selectedSpeechProfile?.hasAPIKey == true
     }
 
-    public static func contextProviderID(for selection: TaskModelSelection) -> String {
-        "openai:\(selection.profileID):\(selection.model)"
+    public static func contextProviderID(for selection: TaskModelSelection, profile: ProviderProfile? = nil) -> String {
+        switch profile?.type {
+        case .hermes:
+            return AssistantProviderIDs.hermes(profileID: selection.profileID, model: selection.model)
+        case .openAI, .custom, nil:
+            return "openai:\(selection.profileID):\(selection.model)"
+        }
     }
 
     public static func normalizedModel(_ model: String) -> String {
@@ -315,7 +540,7 @@ public struct ProviderSettings: Codable, Equatable, Sendable {
     }
 
     public static func normalizedTTSModel(_ model: String) -> String {
-        defaultTTSModel
+        normalizedOptionValue(model, options: supportedSpeechModels, fallback: defaultTTSModel)
     }
 
     public static func normalizedVoice(_ voice: String) -> String {
@@ -347,6 +572,9 @@ public struct ProviderSettings: Codable, Equatable, Sendable {
             seen.insert(profile.id)
             var normalized = profile
             normalized.setName(profile.name)
+            normalized.setHermesBaseURL(profile.hermesBaseURL)
+            normalized.setHermesResponseModel(profile.hermesResponseModel)
+            normalized.setHermesResponseModels(profile.hermesResponseModels)
             return normalized
         }
     }
@@ -355,28 +583,28 @@ public struct ProviderSettings: Codable, Equatable, Sendable {
         _ selection: TaskModelSelection?,
         fallbackModel: String,
         profiles: [ProviderProfile],
-        options: [OpenAIModelOption]
+        task: SelectionTask
     ) -> TaskModelSelection? {
-        let fallbackProfileID = profiles.first(where: { $0.type == .openAI })?.id
+        let fallbackProfileID = profiles.first(where: { task.supports($0) })?.id
         let profileID = selection?.profileID.nilIfEmpty ?? fallbackProfileID
         guard let profileID,
-              profiles.contains(where: { $0.id == profileID && $0.type == .openAI })
+              let profile = profiles.first(where: { $0.id == profileID }),
+              task.supports(profile)
         else {
             return nil
         }
 
-        return TaskModelSelection(
-            profileID: profileID,
-            model: normalizedOptionValue(selection?.model ?? fallbackModel, options: options, fallback: fallbackModel)
-        )
+        let model = selection?.model ?? task.fallbackModel(fallbackModel, profile: profile)
+        return TaskModelSelection(profileID: profileID, model: task.normalizedModel(model, profile: profile))
     }
 
     private static func hasAnySelectedKey(
         profiles: [ProviderProfile],
         response: TaskModelSelection?,
-        transcription: TaskModelSelection?
+        transcription: TaskModelSelection?,
+        speech: TaskModelSelection?
     ) -> Bool {
-        let ids = Set([response?.profileID, transcription?.profileID].compactMap { $0 })
+        let ids = Set([response?.profileID, transcription?.profileID, speech?.profileID].compactMap { $0 })
         return profiles.contains { ids.contains($0.id) && $0.hasAPIKey }
     }
 
@@ -384,8 +612,21 @@ public struct ProviderSettings: Codable, Equatable, Sendable {
         guard let selection,
               let profile = profile(id: selection.profileID)
         else { return false }
-        return profile.type == .openAI && profile.hasAPIKey &&
-            Self.supportedAssistantModels.contains { $0.apiValue == selection.model }
+        switch profile.type {
+        case .openAI:
+            return profile.hasAPIKey &&
+                Self.supportedAssistantModels.contains { $0.apiValue == selection.model }
+        case .hermes:
+            return profile.hasAPIKey &&
+                profile.hasValidHermesBaseURL &&
+                ProviderProfile.normalizedHermesResponseModel(selection.model) == selection.model &&
+                (
+                    profile.hermesResponseModels.contains(selection.model) ||
+                    ProviderProfile.normalizedHermesResponseModel(profile.hermesResponseModel) == selection.model
+                )
+        case .custom:
+            return false
+        }
     }
 
     private func isExecutableTranscriptionSelection(_ selection: TaskModelSelection?) -> Bool {
@@ -396,14 +637,90 @@ public struct ProviderSettings: Codable, Equatable, Sendable {
             Self.supportedTranscriptionModels.contains { $0.apiValue == selection.model }
     }
 
+    private func isExecutableSpeechSelection(_ selection: TaskModelSelection?) -> Bool {
+        guard let selection,
+              let profile = profile(id: selection.profileID)
+        else { return false }
+        return profile.type.supportsSpeech && profile.hasAPIKey &&
+            Self.supportedSpeechModels.contains { $0.apiValue == selection.model }
+    }
+
     private func defaultResponseSelection() -> TaskModelSelection? {
-        guard let profile = firstOpenAIProfile(withAPIKey: true) else { return nil }
-        return TaskModelSelection(profileID: profile.id, model: Self.defaultModel)
+        guard let profile = firstResponseProfile(withAPIKey: true) else { return nil }
+        switch profile.type {
+        case .openAI:
+            return TaskModelSelection(profileID: profile.id, model: Self.defaultModel)
+        case .hermes:
+            return TaskModelSelection(profileID: profile.id, model: profile.hermesResponseModel)
+        case .custom:
+            return nil
+        }
     }
 
     private func defaultTranscriptionSelection() -> TaskModelSelection? {
         guard let profile = firstOpenAIProfile(withAPIKey: true) else { return nil }
         return TaskModelSelection(profileID: profile.id, model: Self.defaultTranscriptionModel)
+    }
+
+    private func defaultSpeechSelection() -> TaskModelSelection? {
+        guard let profile = firstOpenAIProfile(withAPIKey: true) else { return nil }
+        return TaskModelSelection(profileID: profile.id, model: Self.defaultTTSModel)
+    }
+
+    private enum SelectionTask {
+        case response
+        case transcription
+        case speech
+
+        func supports(_ profile: ProviderProfile) -> Bool {
+            switch self {
+            case .response:
+                return profile.type.supportsResponses
+            case .transcription:
+                return profile.type.supportsTranscription
+            case .speech:
+                return profile.type.supportsSpeech
+            }
+        }
+
+        func normalizedModel(_ model: String, profile: ProviderProfile) -> String {
+            switch self {
+            case .response:
+                switch profile.type {
+                case .openAI:
+                    return ProviderSettings.normalizedOptionValue(
+                        model,
+                        options: ProviderSettings.supportedAssistantModels,
+                        fallback: ProviderSettings.defaultModel
+                    )
+                case .hermes:
+                    return ProviderProfile.normalizedHermesResponseModel(model)
+                case .custom:
+                    return ProviderSettings.defaultModel
+                }
+            case .transcription:
+                return ProviderSettings.normalizedOptionValue(
+                    model,
+                    options: ProviderSettings.supportedTranscriptionModels,
+                    fallback: ProviderSettings.defaultTranscriptionModel
+                )
+            case .speech:
+                return ProviderSettings.normalizedOptionValue(
+                    model,
+                    options: ProviderSettings.supportedSpeechModels,
+                    fallback: ProviderSettings.defaultTTSModel
+                )
+            }
+        }
+
+        func fallbackModel(_ fallback: String, profile: ProviderProfile) -> String {
+            switch self {
+            case .response where profile.type == .hermes:
+                return profile.hermesResponseModel
+            case .response, .transcription, .speech:
+                return fallback
+            }
+        }
     }
 }
 

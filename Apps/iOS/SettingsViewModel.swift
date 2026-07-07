@@ -10,12 +10,42 @@ struct ProviderModelOption: Identifiable, Hashable {
     }
 }
 
+struct ProviderProfileOption: Identifiable, Hashable {
+    var profileID: String
+    var displayName: String
+
+    var id: String {
+        profileID
+    }
+}
+
+struct TaskModelOption: Identifiable, Hashable {
+    var model: String
+    var displayName: String
+
+    var id: String {
+        model
+    }
+}
+
+struct HermesResponseModelOption: Identifiable, Hashable {
+    var modelID: String
+    var displayName: String
+
+    var id: String {
+        modelID
+    }
+}
+
 @MainActor
 final class SettingsViewModel: ObservableObject {
     @Published var selectedResponse: TaskModelSelection? {
         didSet { refreshUnsavedSettingsChanges() }
     }
     @Published var selectedTranscription: TaskModelSelection? {
+        didSet { refreshUnsavedSettingsChanges() }
+    }
+    @Published var selectedSpeech: TaskModelSelection? {
         didSet { refreshUnsavedSettingsChanges() }
     }
     @Published var voice: String {
@@ -43,16 +73,19 @@ final class SettingsViewModel: ObservableObject {
 
     private let credentialStore: any APIKeyStore
     private let apiKeyValidator: OpenAIAPIKeyValidating
+    private let hermesAPIKeyValidator: HermesAPIKeyValidating
     private let settingsStore: UserDefaults
     private var connectivity: PhoneConnectivityController?
 
     init(
         credentialStore: any APIKeyStore = KeychainCredentialStore(),
         apiKeyValidator: OpenAIAPIKeyValidating = OpenAIAPIKeyValidationService(),
+        hermesAPIKeyValidator: HermesAPIKeyValidating = HermesAPIKeyValidationService(),
         settingsStore: UserDefaults = .standard
     ) {
         self.credentialStore = credentialStore
         self.apiKeyValidator = apiKeyValidator
+        self.hermesAPIKeyValidator = hermesAPIKeyValidator
         self.settingsStore = settingsStore
 
         var initialError: String?
@@ -60,7 +93,7 @@ final class SettingsViewModel: ObservableObject {
         var loadedKeys: [String: String] = [:]
         var drafts: [String: String] = [:]
 
-        for profile in loadedSettings.providerProfiles where profile.type == .openAI {
+        for profile in loadedSettings.providerProfiles where profile.type.supportsAPIKey {
             do {
                 let apiKey = try credentialStore.loadAPIKey(for: profile.id)?
                     .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -82,6 +115,7 @@ final class SettingsViewModel: ObservableObject {
         self.settings = loadedSettings
         self.selectedResponse = loadedSettings.selectedResponse
         self.selectedTranscription = loadedSettings.selectedTranscription
+        self.selectedSpeech = loadedSettings.selectedSpeech
         self.voice = loadedSettings.voice
         self.isAutoReadEnabled = loadedSettings.isAutoReadEnabled
         self.shouldIgnoreSilentModeForAutoRead = loadedSettings.shouldIgnoreSilentModeForAutoRead
@@ -147,12 +181,116 @@ final class SettingsViewModel: ObservableObject {
         settings.providerProfiles
     }
 
+    var responseProviderOptions: [ProviderProfileOption] {
+        storedSettingsWithCurrentKeyStatuses().providerProfiles.compactMap { profile in
+            guard !responseModelOptions(for: profile.id).isEmpty else { return nil }
+            return ProviderProfileOption(profileID: profile.id, displayName: profile.name)
+        }
+    }
+
+    var transcriptionProviderOptions: [ProviderProfileOption] {
+        storedSettingsWithCurrentKeyStatuses().providerProfiles.compactMap { profile in
+            guard profile.type.supportsTranscription, profile.hasAPIKey else { return nil }
+            return ProviderProfileOption(profileID: profile.id, displayName: profile.name)
+        }
+    }
+
+    var selectedResponseModelOptions: [TaskModelOption] {
+        responseModelOptions(for: selectedResponse?.profileID)
+    }
+
+    var selectedTranscriptionModelOptions: [TaskModelOption] {
+        transcriptionModelOptions(for: selectedTranscription?.profileID)
+    }
+
     var responseModelOptions: [ProviderModelOption] {
-        modelOptions(using: ProviderSettings.supportedAssistantModels)
+        let currentSettings = storedSettingsWithCurrentKeyStatuses()
+        return currentSettings.providerProfiles.flatMap { profile -> [ProviderModelOption] in
+            guard profile.hasAPIKey else { return [] }
+
+            switch profile.type {
+            case .openAI:
+                return ProviderSettings.supportedAssistantModels.map { model in
+                    ProviderModelOption(
+                        selection: TaskModelSelection(profileID: profile.id, model: model.apiValue),
+                        displayName: "\(profile.name) / \(model.displayName)"
+                    )
+                }
+            case .hermes:
+                guard profile.hasValidHermesBaseURL else { return [] }
+                var options = profile.hermesResponseModels.map { model in
+                    ProviderModelOption(
+                        selection: TaskModelSelection(profileID: profile.id, model: model),
+                        displayName: "\(profile.name) / \(model)"
+                    )
+                }
+                if currentSettings.selectedResponse?.profileID == profile.id,
+                   let currentModel = currentSettings.selectedResponse?.model,
+                   !currentModel.isEmpty,
+                   !profile.hermesResponseModels.contains(currentModel) {
+                    options.insert(
+                        ProviderModelOption(
+                            selection: TaskModelSelection(profileID: profile.id, model: currentModel),
+                            displayName: "\(profile.name) / \(currentModel) (current unavailable)"
+                        ),
+                        at: 0
+                    )
+                }
+                return options
+            case .custom:
+                return []
+            }
+        }
     }
 
     var transcriptionModelOptions: [ProviderModelOption] {
         modelOptions(using: ProviderSettings.supportedTranscriptionModels)
+    }
+
+    var speechModelOptions: [ProviderModelOption] {
+        modelOptions(using: ProviderSettings.supportedSpeechModels)
+    }
+
+    func selectResponseProvider(profileID: String?) {
+        guard let profileID, !profileID.isEmpty else {
+            selectedResponse = nil
+            return
+        }
+
+        guard selectedResponse?.profileID != profileID else { return }
+        guard let model = preferredResponseModel(for: profileID) else {
+            selectedResponse = nil
+            return
+        }
+        selectedResponse = TaskModelSelection(profileID: profileID, model: model)
+    }
+
+    func selectResponseModel(_ model: String) {
+        guard let profileID = selectedResponse?.profileID,
+              responseModelOptions(for: profileID).contains(where: { $0.model == model })
+        else { return }
+        selectedResponse = TaskModelSelection(profileID: profileID, model: model)
+    }
+
+    func selectTranscriptionProvider(profileID: String?) {
+        guard let profileID, !profileID.isEmpty else {
+            selectedTranscription = nil
+            return
+        }
+
+        guard selectedTranscription?.profileID != profileID else { return }
+        guard let model = transcriptionModelOptions(for: profileID).first?.model else {
+            selectedTranscription = nil
+            return
+        }
+        selectedTranscription = TaskModelSelection(profileID: profileID, model: model)
+    }
+
+    func selectTranscriptionModel(_ model: String) {
+        guard let profileID = selectedTranscription?.profileID,
+              transcriptionModelOptions(for: profileID).contains(where: { $0.model == model })
+        else { return }
+        selectedTranscription = TaskModelSelection(profileID: profileID, model: model)
     }
 
     var canSaveSettings: Bool {
@@ -170,7 +308,7 @@ final class SettingsViewModel: ObservableObject {
             return "Unsaved changes"
         }
 
-        let configuredCount = settings.providerProfiles.filter { $0.type == .openAI && $0.hasAPIKey }.count
+        let configuredCount = settings.providerProfiles.filter { $0.type.supportsAPIKey && $0.hasAPIKey }.count
         switch configuredCount {
         case 0:
             return "No keys"
@@ -243,8 +381,12 @@ final class SettingsViewModel: ObservableObject {
     }
 
     func saveAPIKeyDraft(for profileID: String) async {
-        guard settings.profile(id: profileID)?.type == .openAI else {
-            apiKeyValidationErrors[profileID] = "Custom providers are not configurable yet."
+        guard let profile = settings.profile(id: profileID) else {
+            apiKeyValidationErrors[profileID] = "Provider was deleted."
+            return
+        }
+        guard profile.type.supportsAPIKey else {
+            apiKeyValidationErrors[profileID] = "This provider does not use an API key yet."
             return
         }
 
@@ -266,10 +408,7 @@ final class SettingsViewModel: ObservableObject {
         }
 
         do {
-            try await apiKeyValidator.validateAPIKey(
-                apiKey: trimmed,
-                model: ProviderSettings.defaultModel
-            )
+            let hermesModels = try await validateAPIKey(trimmed, for: profile)
             try credentialStore.saveAPIKey(trimmed, for: profileID)
             savedAPIKeys[profileID] = trimmed
             apiKeyDrafts[profileID] = trimmed
@@ -277,6 +416,9 @@ final class SettingsViewModel: ObservableObject {
 
             var updatedSettings = storedSettingsWithCurrentKeyStatuses()
             updatedSettings.setAPIKeyStatus(true, for: profileID)
+            if let hermesModels {
+                applyHermesResponseModels(hermesModels, to: profileID, in: &updatedSettings)
+            }
             updatedSettings.normalizeSelectionsAfterProfileChange()
             removePendingWatchKeyDeletion(profileID: profileID)
             persistSettings(updatedSettings, syncDraft: true)
@@ -295,6 +437,75 @@ final class SettingsViewModel: ObservableObject {
         hasUnsavedAPIKeyChanges(for: profileID) && !isSavingAPIKey(for: profileID)
     }
 
+    func hermesResponseModelOptions(for profileID: String) -> [HermesResponseModelOption] {
+        guard let profile = settings.profile(id: profileID), profile.type == .hermes else { return [] }
+
+        var models = profile.hermesResponseModels
+        let currentModel = profile.hermesResponseModel
+        if !currentModel.isEmpty, !models.contains(currentModel) {
+            models.insert(currentModel, at: 0)
+        }
+
+        return models.map { model in
+            let isUnavailable = model == currentModel && !profile.hermesResponseModels.contains(model)
+            return HermesResponseModelOption(
+                modelID: model,
+                displayName: isUnavailable ? "\(model) (current unavailable)" : model
+            )
+        }
+    }
+
+    func canSelectHermesResponseModel(for profileID: String) -> Bool {
+        guard let profile = settings.profile(id: profileID) else { return false }
+        return profile.type == .hermes &&
+            profile.hasAPIKey &&
+            profile.hasValidHermesBaseURL &&
+            !profile.hermesResponseModels.isEmpty &&
+            !isSavingAPIKey(for: profileID)
+    }
+
+    func canRefreshHermesModels(for profileID: String) -> Bool {
+        guard let profile = settings.profile(id: profileID) else { return false }
+        return profile.type == .hermes &&
+            profile.hasValidHermesBaseURL &&
+            !normalizedAPIKey(savedAPIKeys[profileID] ?? "").isEmpty &&
+            !hasUnsavedAPIKeyChanges(for: profileID) &&
+            !isSavingAPIKey(for: profileID)
+    }
+
+    func refreshHermesModels(for profileID: String) async {
+        guard let profile = settings.profile(id: profileID), profile.type == .hermes else {
+            apiKeyValidationErrors[profileID] = "Provider was deleted."
+            return
+        }
+
+        let apiKey = normalizedAPIKey(savedAPIKeys[profileID] ?? "")
+        guard !apiKey.isEmpty else {
+            apiKeyValidationErrors[profileID] = "Save the Hermes API key before refreshing models."
+            return
+        }
+
+        savingAPIKeyProfileIDs.insert(profileID)
+        apiKeyValidationErrors[profileID] = nil
+        defer {
+            savingAPIKeyProfileIDs.remove(profileID)
+        }
+
+        do {
+            let models = try await hermesAPIKeyValidator.validateAPIKey(
+                apiKey: apiKey,
+                baseURL: profile.hermesBaseURL
+            )
+            var updatedSettings = storedSettingsWithCurrentKeyStatuses()
+            applyHermesResponseModels(models, to: profileID, in: &updatedSettings)
+            updatedSettings.normalizeSelectionsAfterProfileChange()
+            persistSettings(updatedSettings, syncDraft: true)
+            lastError = nil
+        } catch {
+            apiKeyValidationErrors[profileID] = error.localizedDescription
+        }
+    }
+
     func hasAPIKeyText(for profileID: String) -> Bool {
         !normalizedAPIKey(apiKeyDrafts[profileID] ?? "").isEmpty
     }
@@ -309,6 +520,43 @@ final class SettingsViewModel: ObservableObject {
 
     func isSavingAPIKey(for profileID: String) -> Bool {
         savingAPIKeyProfileIDs.contains(profileID)
+    }
+
+    func updateHermesBaseURL(profileID: String, baseURL: String) {
+        guard let index = settings.providerProfiles.firstIndex(where: { $0.id == profileID }) else { return }
+
+        var profile = settings.providerProfiles[index]
+        let oldBaseURL = profile.hermesBaseURL
+        profile.setHermesBaseURL(baseURL)
+        profile.setHermesResponseModels([])
+        guard profile.hermesBaseURL != oldBaseURL else { return }
+
+        var updatedSettings = storedSettingsWithCurrentKeyStatuses()
+        updatedSettings.providerProfiles[index] = profile
+        updatedSettings.normalizeSelectionsAfterProfileChange()
+        apiKeyValidationErrors[profileID] = nil
+        persistSettings(updatedSettings, syncDraft: true)
+    }
+
+    func updateHermesResponseModel(profileID: String, model: String) {
+        guard let index = settings.providerProfiles.firstIndex(where: { $0.id == profileID }) else { return }
+
+        var profile = settings.providerProfiles[index]
+        let oldModel = profile.hermesResponseModel
+        profile.setHermesResponseModel(model)
+        guard profile.hermesResponseModel != oldModel else { return }
+
+        var updatedSettings = storedSettingsWithCurrentKeyStatuses()
+        updatedSettings.providerProfiles[index] = profile
+        if updatedSettings.selectedResponse?.profileID == profileID {
+            updatedSettings.selectedResponse = TaskModelSelection(
+                profileID: profileID,
+                model: profile.hermesResponseModel
+            )
+        }
+        updatedSettings.normalizeSelectionsAfterProfileChange()
+        apiKeyValidationErrors[profileID] = nil
+        persistSettings(updatedSettings, syncDraft: true)
     }
 
     func saveSettings() {
@@ -355,6 +603,127 @@ final class SettingsViewModel: ObservableObject {
                 )
             }
         }
+    }
+
+    private func responseModelOptions(for profileID: String?) -> [TaskModelOption] {
+        guard let profileID,
+              let profile = storedSettingsWithCurrentKeyStatuses().profile(id: profileID),
+              profile.hasAPIKey
+        else { return [] }
+
+        switch profile.type {
+        case .openAI:
+            return ProviderSettings.supportedAssistantModels.map { model in
+                TaskModelOption(model: model.apiValue, displayName: model.displayName)
+            }
+        case .hermes:
+            guard profile.hasValidHermesBaseURL else { return [] }
+            var options = profile.hermesResponseModels.map { model in
+                TaskModelOption(model: model, displayName: model)
+            }
+            if selectedResponse?.profileID == profile.id,
+               let currentModel = selectedResponse?.model,
+               !currentModel.isEmpty,
+               !profile.hermesResponseModels.contains(currentModel) {
+                options.insert(
+                    TaskModelOption(model: currentModel, displayName: "\(currentModel) (current unavailable)"),
+                    at: 0
+                )
+            }
+            return options
+        case .custom:
+            return []
+        }
+    }
+
+    private func transcriptionModelOptions(for profileID: String?) -> [TaskModelOption] {
+        guard let profileID,
+              let profile = storedSettingsWithCurrentKeyStatuses().profile(id: profileID),
+              profile.type.supportsTranscription,
+              profile.hasAPIKey
+        else { return [] }
+
+        return ProviderSettings.supportedTranscriptionModels.map { model in
+            TaskModelOption(model: model.apiValue, displayName: model.displayName)
+        }
+    }
+
+    private func preferredResponseModel(for profileID: String) -> String? {
+        guard let profile = storedSettingsWithCurrentKeyStatuses().profile(id: profileID) else { return nil }
+        let options = responseModelOptions(for: profileID)
+        guard !options.isEmpty else { return nil }
+
+        let preferredModel: String
+        switch profile.type {
+        case .openAI:
+            preferredModel = ProviderSettings.defaultModel
+        case .hermes:
+            preferredModel = profile.hermesResponseModel
+        case .custom:
+            return nil
+        }
+
+        if options.contains(where: { $0.model == preferredModel }) {
+            return preferredModel
+        }
+        return options.first?.model
+    }
+
+    private func validateAPIKey(_ apiKey: String, for profile: ProviderProfile) async throws -> [String]? {
+        switch profile.type {
+        case .openAI:
+            try await apiKeyValidator.validateAPIKey(
+                apiKey: apiKey,
+                model: ProviderSettings.defaultModel
+            )
+            return nil
+        case .hermes:
+            return try await hermesAPIKeyValidator.validateAPIKey(
+                apiKey: apiKey,
+                baseURL: profile.hermesBaseURL
+            )
+        case .custom:
+            throw HermesAPIValidationError.hermesError("This provider is not configurable yet.")
+        }
+    }
+
+    private func applyHermesResponseModels(
+        _ models: [String],
+        to profileID: String,
+        in settings: inout ProviderSettings
+    ) {
+        guard let index = settings.providerProfiles.firstIndex(where: { $0.id == profileID }) else { return }
+
+        var profile = settings.providerProfiles[index]
+        profile.setHermesResponseModels(models)
+        let currentModel = settings.selectedResponse?.profileID == profileID ?
+            settings.selectedResponse?.model ?? profile.hermesResponseModel :
+            profile.hermesResponseModel
+        let selectedModel = preferredHermesResponseModel(
+            currentModel: currentModel,
+            availableModels: profile.hermesResponseModels
+        )
+        profile.setHermesResponseModel(selectedModel)
+        settings.providerProfiles[index] = profile
+
+        if settings.selectedResponse?.profileID == profileID {
+            settings.selectedResponse = TaskModelSelection(profileID: profileID, model: profile.hermesResponseModel)
+        }
+    }
+
+    private func preferredHermesResponseModel(currentModel: String, availableModels: [String]) -> String {
+        let normalizedCurrent = ProviderProfile.normalizedHermesResponseModel(currentModel)
+        if availableModels.contains(normalizedCurrent) {
+            return normalizedCurrent
+        }
+        if availableModels.contains(ProviderProfile.defaultHermesResponseModel) {
+            return ProviderProfile.defaultHermesResponseModel
+        }
+        if normalizedCurrent == ProviderProfile.defaultHermesResponseModel,
+           let firstModel = availableModels.first {
+            return firstModel
+        }
+        return normalizedCurrent
     }
 
     private func deleteProviders(ids: [String]) {
@@ -433,6 +802,7 @@ final class SettingsViewModel: ObservableObject {
         if syncDraft {
             selectedResponse = settings.selectedResponse
             selectedTranscription = settings.selectedTranscription
+            selectedSpeech = settings.selectedSpeech
             voice = settings.voice
             isAutoReadEnabled = settings.isAutoReadEnabled
             shouldIgnoreSilentModeForAutoRead = settings.shouldIgnoreSilentModeForAutoRead
@@ -470,13 +840,14 @@ final class SettingsViewModel: ObservableObject {
         var draft = storedSettingsWithCurrentKeyStatuses()
         draft.selectedResponse = selectedResponse
         draft.selectedTranscription = selectedTranscription
+        draft.selectedSpeech = selectedSpeech
         draft.model = selectedResponse?.model ?? ProviderSettings.defaultModel
         draft.transcriptionModel = selectedTranscription?.model ?? ProviderSettings.defaultTranscriptionModel
+        draft.ttsModel = selectedSpeech?.model ?? ProviderSettings.defaultTTSModel
         draft.voice = voice
         draft.instructions = instructions
         draft.isAutoReadEnabled = isAutoReadEnabled
         draft.shouldIgnoreSilentModeForAutoRead = shouldIgnoreSilentModeForAutoRead
-        draft.ttsModel = ProviderSettings.defaultTTSModel
         draft.normalizeSelectionsAfterProfileChange()
         return draft
     }

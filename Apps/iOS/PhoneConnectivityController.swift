@@ -477,13 +477,16 @@ final class PhoneConnectivityController: NSObject, WCSessionDelegate {
             ids.append(resolved)
         }
 
-        for profile in settings.providerProfiles where profile.type == .openAI {
+        for profile in settings.providerProfiles where profile.type.supportsAPIKey {
             append(profile.id)
         }
         if let profileID = settings.selectedResponse?.profileID {
             append(profileID)
         }
         if let profileID = settings.selectedTranscription?.profileID {
+            append(profileID)
+        }
+        if let profileID = settings.selectedSpeech?.profileID {
             append(profileID)
         }
         for pendingDeletionID in pendingDeletionIDs {

@@ -2,6 +2,10 @@ import Foundation
 
 public enum AssistantProviderIDs {
     public static let openAI = "openai"
+
+    public static func hermes(profileID: String, model: String) -> String {
+        "hermes:\(profileID):\(model)"
+    }
 }
 
 public struct ProviderContextState: Codable, Equatable, Sendable {

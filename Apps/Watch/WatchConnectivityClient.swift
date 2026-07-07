@@ -231,7 +231,7 @@ final class WatchConnectivityClient: NSObject, WCSessionDelegate {
     @MainActor
     private func hasAnyLocalAPIKey(in settings: ProviderSettings) -> Bool {
         settings.providerProfiles.contains { profile in
-            profile.type == .openAI && (hasLocalAPIKey?(profile.id) ?? profile.hasAPIKey)
+            profile.type.supportsAPIKey && (hasLocalAPIKey?(profile.id) ?? profile.hasAPIKey)
         }
     }
 
@@ -248,13 +248,16 @@ final class WatchConnectivityClient: NSObject, WCSessionDelegate {
         }
 
         let settings = WatchConfigurationStore().loadConfiguration().settings
-        for profile in settings.providerProfiles where profile.type == .openAI {
+        for profile in settings.providerProfiles where profile.type.supportsAPIKey {
             append(profile.id)
         }
         if let profileID = settings.selectedResponse?.profileID {
             append(profileID)
         }
         if let profileID = settings.selectedTranscription?.profileID {
+            append(profileID)
+        }
+        if let profileID = settings.selectedSpeech?.profileID {
             append(profileID)
         }
 
